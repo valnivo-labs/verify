@@ -1,6 +1,6 @@
 {
   "name": "@valnivo_labs/verify",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Checks a signed document saved from a Valnivo Labs product — today, a Valnivo loan PDF — with nothing but the file: the terms both people signed, every step signed and unbroken. The format is written down in PROOF.md.",
   "license": "Apache-2.0",
   "author": "Valnivo Labs",

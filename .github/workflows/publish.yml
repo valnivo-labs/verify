@@ -1,9 +1,10 @@
-# Publishes this package to npm. Manual only: an npm version cannot be taken
-# back. It builds and tests first, and attaches npm provenance, which a public
-# repository can.
+# Stages this package on npm. Manual only: an npm version cannot be taken back.
 #
-# Needs one secret, NPM_TOKEN: a granular token of the valnivo_labs account
-# with publish rights on @valnivo_labs/verify.
+# No token is stored anywhere. npm trusts this repository's workflow directly
+# (trusted publishing, over OpenID Connect), and allows it to *stage* a version
+# only: a staged version stays private until a person approves it on
+# npmjs.com with the account's two-factor login. Provenance is attached
+# automatically, so the npm page shows which commit of valnivo-labs/verify built it.
 name: Publish to npm
 
 on:
@@ -27,15 +28,16 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      # Trusted publishing and staging need npm 11.5.1 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@latest && npm --version
       - run: npm ci
       - run: npm run build
       - run: npm test
-      - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Stage
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             npm publish --access public --dry-run
           else
-            npm publish --access public --provenance
+            npm stage publish --access public
+            echo "Staged. Approve it at https://www.npmjs.com/package/@valnivo_labs/verify with the account's two-factor login."
           fi
