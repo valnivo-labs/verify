@@ -16,7 +16,15 @@ if (!file) {
   process.exit(2)
 }
 
-const result = await checkFile(new Uint8Array(readFileSync(file)))
+let bytes: Uint8Array
+try {
+  bytes = new Uint8Array(readFileSync(file))
+} catch (e) {
+  // A mistyped name is the common case: say which file and why, not a stack trace.
+  console.error(`Cannot read ${file}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`)
+  process.exit(2)
+}
+const result = await checkFile(bytes)
 if (json) {
   console.log(JSON.stringify(result, null, 2))
 } else if (result.outcome === 'no-proof') {
