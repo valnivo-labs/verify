@@ -78,7 +78,9 @@ export function sentenceFor(result: Checked, online: boolean): string {
     case 'not-authentic':
       return 'Not authentic. Something in it is not what was signed, or Valnivo never recorded it.'
     case 'unknown-kind':
-      return 'This file carries a signed document, but not a loan: this checker reads only loans.'
+      return result.signaturesHold
+        ? `A signed document of another kind (${result.kind}). Its signatures and history hold: the text is the one both people signed, and nothing in it has been changed. This checker knows the rules of loans only, so it cannot check that kind’s own terms.`
+        : `Not authentic. This is a signed document of another kind (${result.kind}), and something in it is not what was signed.`
     case 'no-proof':
       return 'Not authentic: this file carries no Valnivo proof. It was not saved from Valnivo, or its proof was removed.'
   }
@@ -139,6 +141,27 @@ function whatItSays(result: Extract<Checked, { verdict: unknown }>): HTMLElement
   )
 }
 
+/**
+ * What every signed document carries, whatever its kind: the kind, the two
+ * names, the steps and the fingerprint. For a kind this checker does not know,
+ * that is all it can honestly show.
+ */
+function whatAnyDocumentSays(result: Extract<Checked, { outcome: 'unknown-kind' }>): HTMLElement {
+  const doc = result.proof.document
+  const entries = [...result.proof.entries].sort((a, b) => a.seq - b.seq) as HistoryEntry[]
+  return h(
+    'section',
+    { class: 'ck-says' },
+    h('h2', {}, 'What the proof itself says'),
+    h('p', {}, `Kind: ${result.kind}`),
+    h('p', {}, `Proposed by ${doc.proposerName}, answered by ${doc.counterpartyName}.`),
+    h('h3', {}, 'Every step'),
+    h('ol', { class: 'ck-steps' }, ...entries.map((e) => h('li', {}, `${e.act} (${e.role}) — ${when(e.at)}`))),
+    h('p', { class: 'ck-hint' }, `Fingerprint of the text: ${result.termsPrint}`),
+    h('p', { class: 'ck-hint' }, 'It was not compared with Valnivo’s record, which this page reads for loans only.'),
+  )
+}
+
 export interface MountOptions {
   /** Reads Valnivo's record of a history. Absent in the offline file, which asks nobody anything. */
   record?: ReadRecord
@@ -174,11 +197,12 @@ export function mountChecker(root: HTMLElement, options: MountOptions = {}): voi
       return
     }
     const found = await checkFile(bytes, options.record)
-    const bad = found.outcome === 'not-authentic' || found.outcome === 'no-proof' || found.outcome === 'unknown-kind'
+    const bad = found.outcome === 'not-authentic' || found.outcome === 'no-proof' || (found.outcome === 'unknown-kind' && !found.signaturesHold)
     const parts: Child[] = [
       h('p', { class: bad ? 'ck-verdict ck-bad' : 'ck-verdict ck-good' }, sentenceFor(found, online)),
       found.outcome === 'holds' ? h('p', { class: 'ck-limit' }, WITHOUT_THE_RECORD) : null,
       'verdict' in found ? whatItSays(found) : null,
+      found.outcome === 'unknown-kind' && found.signaturesHold ? whatAnyDocumentSays(found) : null,
       'problems' in found && found.problems.length
         ? h('details', {}, h('summary', {}, 'What did not hold'), h('p', { class: 'ck-hint' }, found.problems.join(', ')))
         : null,
