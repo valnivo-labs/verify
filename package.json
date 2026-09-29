@@ -38,7 +38,7 @@
     }
   },
   "bin": {
-    "valnivo-verify": "./dist/cli.js"
+    "valnivo-verify": "dist/cli.js"
   },
   "files": [
     "dist",
