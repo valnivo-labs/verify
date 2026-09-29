@@ -18,7 +18,7 @@ import {
   type Proof,
 } from '../src/signing.ts'
 import { BORROWER, LENDER, loanDocument, repaymentDetail } from '../src/loan.ts'
-import { PROOF_MARKS, WITHOUT_THE_RECORD, checkFile, checkLoaded, proofInFile } from '../src/index.ts'
+import { KNOWN_KINDS, PROOF_MARKS, WITHOUT_THE_RECORD, checkFile, checkLoaded, proofInFile } from '../src/index.ts'
 
 const spec = readFileSync(new URL('../PROOF.md', import.meta.url), 'utf8')
 
@@ -125,4 +125,24 @@ test('the document states the constants the code uses, and what an offline check
 test('the checker reaches nothing', () => {
   const source = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
   assert.ok(!/\bfetch\(|XMLHttpRequest|WebSocket|indexedDB|localStorage/.test(source))
+})
+
+test('any signed document is checked, not only a loan: the shared layer holds or fails for every kind', async () => {
+  // A kind no checker here knows. Everything every kind shares is still checked.
+  const doc = { version: 1 as const, kind: 'test.flat-share', proposerName: 'Ana', counterpartyName: 'Ben', content: { rent: 'split in two' }, nonce: newNonce() }
+  const print = await fingerprint(doc)
+  const [a, b] = [await newSigningKey(), await newSigningKey()]
+  const entries: HistoryEntry[] = []
+  for (const [act, role] of [['proposed', 'proposer'], ['signed', 'counterparty']] as const) {
+    entries.push({ ...(await signEntry('share-1', { ...nextLink(entries), act, role, byUid: role, termsPrint: print, detail: '' }, role === 'proposer' ? a : b)), at: 1 })
+  }
+  const proof: Proof = { format: PROOF_FORMAT, documentId: 'share-1', document: doc, entries }
+  const found = await checkFile(fileWith(proof))
+  assert.equal(found.outcome, 'unknown-kind')
+  assert.ok(found.outcome === 'unknown-kind' && found.signaturesHold && found.kind === 'test.flat-share' && found.termsPrint === print)
+  const edited = await checkLoaded({ ...proof, document: { ...doc, content: { rent: 'all mine' } } })
+  assert.ok(edited.outcome === 'unknown-kind' && !edited.signaturesHold, 'a changed document of any kind is caught')
+  const dropped = await checkLoaded({ ...proof, entries: [entries[1]] })
+  assert.ok(dropped.outcome === 'unknown-kind' && !dropped.signaturesHold, 'a removed step of any kind is caught')
+  assert.deepEqual([...KNOWN_KINDS], ['labs.loan'])
 })

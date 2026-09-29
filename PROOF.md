@@ -1,8 +1,10 @@
 # The proof format: `valnivo-labs-proof-v1`
 
-This is how a signed document from a Valnivo Labs product — today, Valnivo's *money lent between two
-people* — carries the evidence that lets anybody check it, and how to check it **by hand, without our
-code and without our servers**. Everything below is plain SHA-256, ECDSA P-256 and JSON; any language
+This is how **any document two people sign in a Valnivo Labs product** carries the evidence that lets
+anybody check it is authentic, and how to check it **by hand, without our code and without our
+servers**. A document has a *kind*, which says what it is: the checks in §1–§4 and §6 are the same for
+every kind, and a kind may add rules of its own (§5). The first kind in use is Valnivo's `labs.loan`,
+money lent between two people. Everything below is plain SHA-256, ECDSA P-256 and JSON; any language
 with those three can redo it. `@valnivo_labs/verify` is one implementation of it, and
 `tests/verify.test.ts` holds this document's constants to the code.
 
@@ -47,7 +49,7 @@ hashed or signed below is canonical JSON.
 ## 3. The document and its fingerprint
 
 ```
-{ "version": 1, "kind": "labs.loan", "proposerName": "…", "counterpartyName": "…",
+{ "version": 1, "kind": "<the kind, e.g. labs.loan>", "proposerName": "…", "counterpartyName": "…",
   "content": { … }, "nonce": "<43 characters: 32 random bytes, base64url>" }
 ```
 
@@ -88,10 +90,19 @@ Check, for the entries in `seq` order:
 
 **The steps.** Replaying the acts `signed`, `declined`, `withdrawn` and `closed` must follow the
 document's kind: from *proposed* the counterparty may sign or decline and the proposer may withdraw;
-from *signed* only the roles the kind names may close. `opened` moves nothing. For `labs.loan` only
-the proposer (the lender) closes, with `detail` one of `settled`, `forgiven`, `replaced`.
+from *signed* only the roles the kind names may close, with the outcomes it names. `opened` moves
+nothing. A checker that does not know a kind can still check everything in §1–§4 for it; only the
+kind's own steps and rules (§5) need that kind's definition.
 
-## 5. A loan's own acts
+## 5. A kind's own rules
+
+A kind names who may close a signed document and with which outcomes, and may add acts and checks of
+its own. The kinds defined today:
+
+### `labs.loan` — money one person lent another (Valnivo)
+
+The proposer is the lender and the counterparty the borrower; only the lender closes, with `detail`
+one of `settled`, `forgiven` or `replaced`.
 
 - **`repayment`**: `detail` is the hex SHA-256 of the canonical JSON of the opened payload
   `{amountMinor, paidOn, nonce}`, which the proof carries in `payloads` under the entry's `hash`. The

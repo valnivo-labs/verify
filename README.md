@@ -1,14 +1,18 @@
 # @valnivo_labs/verify
 
-Checks a signed document saved from a Valnivo Labs product — today, **a loan between two people saved
-as a PDF from [Valnivo](https://valnivo.eu)** — with nothing but the file.
+Checks that **a document signed in a Valnivo Labs product is authentic**, with nothing but the file.
 
-It finds the proof the PDF carries, and checks that the terms are the ones both people signed, that
-every step of the history is signed by the key it names, and that nothing was changed, reordered or
-removed. It makes no network request.
+Any document two people sign carries its proof inside the file. This finds it and checks that the
+text is the one both people signed, that every step of its history — proposed, signed, and whatever
+followed — is signed by the key it names, and that nothing was changed, reordered or removed. It makes
+no network request.
+
+That check is the same for every kind of document. A kind can add rules of its own, and those are
+checked for [the kinds listed below](#kinds-of-document); the first is Valnivo's loan between two
+people, saved as a PDF from [Valnivo](https://valnivo.eu).
 
 ```bash
-npx @valnivo_labs/verify loan.pdf
+npx @valnivo_labs/verify document.pdf
 ```
 
 ```js
@@ -69,10 +73,21 @@ Valnivo's.
 same version, so `npm run build:checker` makes the same bytes. The release workflow refuses to publish
 if they differ from the committed file or from what valnivo.eu serves.
 
+## Kinds of document
+
+Every document is checked for everything above. These kinds also have their own rules checked:
+
+| Kind | What it is | Its own rules |
+|---|---|---|
+| `labs.loan` | Money one person lent another, in [Valnivo](https://valnivo.eu) | repayments and their confirmations, who may close it and with which outcome, no interest and no field beyond its own |
+
+A document of any other kind is reported as `unknown-kind`, with `signaturesHold` saying whether
+everything every kind shares holds.
+
 ## Also exported
 
-- `@valnivo_labs/verify/signing` — a document two people sign, its signed history, and a proof.
-- `@valnivo_labs/verify/loan` — money one person lent another, as one kind of signed document.
+- `@valnivo_labs/verify/signing` — a document two people sign, of any kind: its canonical form, fingerprint, signed history and proof.
+- `@valnivo_labs/verify/loan` — one kind of signed document: money one person lent another.
 
 ## Licence
 
