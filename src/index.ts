@@ -1,0 +1,113 @@
+/**
+ * Checking a signed document from the file it was saved in, with nothing but
+ * the file.
+ *
+ * A product that hands out a signed document — Valnivo's loan PDF — writes its
+ * proof (`@valnivo_labs/signing`'s `Proof`) into the file as one comment line,
+ * `%<MARK><proof>`, which no reader shows. This finds that line, checks the
+ * proof, and says what the check found in one of a few words, so every place
+ * that checks a file — the product's own screen, a public page, a file saved
+ * next to the document, a command — says the same thing for the same file.
+ *
+ * **Two checks, and only the first needs nothing.** The proof alone shows that
+ * the text is the one both signed, that every step is signed by the key it
+ * names and that nothing was changed, reordered or removed. It cannot show that
+ * the history is the one the product *recorded*, rather than one somebody built
+ * with keys of their own — that takes the product's public record of the
+ * history (`Anchor`), which the caller reads and passes in. With no way to read
+ * one, the answer is `holds`, and `WITHOUT_THE_RECORD` is what it does not
+ * mean. The format is written down in `PROOF.md`, so the check can be redone
+ * with any SHA-256 and ECDSA P-256 implementation.
+ *
+ * **Nothing here reaches a network.** Reading the record is the caller's.
+ */
+import { anchorProblems, decodeProof, type Anchor, type Proof } from './signing.ts'
+import { LOAN, verifyLoanProof } from './loan.ts'
+
+/**
+ * The line each product writes its proof on, after a `%`. **Never renamed**:
+ * every file already saved carries its product's mark.
+ */
+export const PROOF_MARKS = {
+  valnivo: 'VALNIVO-PROOF-V1 ',
+} as const
+
+export type ProductMark = keyof typeof PROOF_MARKS
+
+/** The proof a file carries, or null when it carries none. The first mark found wins. */
+export function proofInFile(bytes: Uint8Array): Proof | null {
+  // Latin-1 maps every byte to one character, so a binary file decodes without
+  // loss and the ASCII proof line reads as itself.
+  const text = new TextDecoder('latin1').decode(bytes)
+  for (const mark of Object.values(PROOF_MARKS)) {
+    const at = text.indexOf(`%${mark}`)
+    if (at < 0) continue
+    const start = at + 1 + mark.length
+    const ends = [text.indexOf('\n', start), text.indexOf('\r', start)].filter((i) => i >= 0)
+    const proof = decodeProof(text.slice(start, ends.length ? Math.min(...ends) : undefined))
+    if (proof) return proof
+  }
+  return null
+}
+
+/** The only kind with a checker today. A second kind widens this, and `checkProof` with it. */
+export type ProofVerdict = Awaited<ReturnType<typeof verifyLoanProof>>
+
+/**
+ * - `authentic`: the proof holds **and** is the history the product recorded, entry for entry.
+ * - `older`: it holds and is the start of the recorded history — saved before later steps.
+ * - `holds`: it holds on its own, and no record was consulted (checked offline).
+ * - `unanchored`: it holds on its own, and the record could not be reached.
+ * - `not-authentic`: something in it is not what was signed, or no such history was recorded.
+ * - `unknown-kind`: a proof of a kind of document this checker does not know.
+ * - `no-proof`: the file carries no proof.
+ */
+export type Outcome = 'authentic' | 'older' | 'holds' | 'unanchored' | 'not-authentic' | 'unknown-kind' | 'no-proof'
+
+export type Checked =
+  | { outcome: 'no-proof' }
+  | { outcome: 'unknown-kind'; proof: Proof }
+  | { outcome: Exclude<Outcome, 'no-proof' | 'unknown-kind'>; proof: Proof; verdict: ProofVerdict; anchor: Anchor | null; problems: string[] }
+
+/** Reads the product's record for a fingerprint: the anchor, null when there is none, or `unreachable`. */
+export type ReadRecord = (termsPrint: string) => Promise<Anchor | null | 'unreachable'>
+
+/** The proof checked on its own, by its kind's checker; null for a kind with none. */
+export async function checkProof(proof: Proof): Promise<ProofVerdict | null> {
+  if (proof.document?.kind === LOAN.kind) return verifyLoanProof(proof)
+  return null
+}
+
+/**
+ * A proof checked, then compared with the record when `record` is given.
+ * Without `record` the best answer is `holds`, never `authentic`.
+ */
+export async function checkLoaded(proof: Proof, record?: ReadRecord): Promise<Exclude<Checked, { outcome: 'no-proof' }>> {
+  const verdict = await checkProof(proof)
+  if (!verdict) return { outcome: 'unknown-kind', proof }
+  if (!verdict.authentic) return { outcome: 'not-authentic', proof, verdict, anchor: null, problems: verdict.problems }
+  if (!record) return { outcome: 'holds', proof, verdict, anchor: null, problems: [] }
+  const found = await record(verdict.termsPrint)
+  if (found === 'unreachable') return { outcome: 'unanchored', proof, verdict, anchor: null, problems: [] }
+  const problems = anchorProblems(proof, verdict.termsPrint, found)
+  if (problems.length === 0) return { outcome: 'authentic', proof, verdict, anchor: found, problems }
+  // The record holds every entry's hash, so "older" has been checked entry by
+  // entry: this is the start of the recorded history, not a shorter one.
+  if (problems.length === 1 && problems[0] === 'older-copy' && found) return { outcome: 'older', proof, verdict, anchor: found, problems }
+  return { outcome: 'not-authentic', proof, verdict, anchor: found, problems }
+}
+
+/** A file checked: its proof found, checked, and compared with the record when `record` is given. */
+export async function checkFile(bytes: Uint8Array, record?: ReadRecord): Promise<Checked> {
+  const proof = proofInFile(bytes)
+  if (!proof) return { outcome: 'no-proof' }
+  return checkLoaded(proof, record)
+}
+
+/**
+ * What `holds` does not mean, in the words every checker should show beside
+ * it. The keys are made on each person's device, so a whole history can be
+ * built with keys of one's own; only the product's record tells the two apart.
+ */
+export const WITHOUT_THE_RECORD =
+  'Checked without the record: the document is the one its signatures cover and nothing in it has been changed, but this does not show that the history was recorded by the product rather than built with keys of somebody’s own.'

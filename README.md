@@ -1,0 +1,50 @@
+# @valnivo_labs/verify
+
+Checks a signed document saved from a Valnivo Labs product — today, **a loan between two people saved
+as a PDF from [Valnivo](https://valnivo.eu)** — with nothing but the file.
+
+It finds the proof the PDF carries, and checks that the terms are the ones both people signed, that
+every step of the history is signed by the key it names, and that nothing was changed, reordered or
+removed. It makes no network request.
+
+```bash
+npx @valnivo_labs/verify loan.pdf
+```
+
+```js
+import { checkFile } from '@valnivo_labs/verify'
+
+const result = await checkFile(new Uint8Array(bytes))
+result.outcome // 'holds', 'not-authentic', 'no-proof' or 'unknown-kind'
+```
+
+## What "holds" means, and what it does not
+
+**It holds**: the document is the one its signatures cover, and nothing in it has been changed.
+
+**It does not show** that the history is the one Valnivo recorded, rather than one somebody built with
+signing keys of their own — the keys are made on each person's device. Valnivo keeps a public record
+of every history, and a check against it answers *authentic*: pass a reader for that record as the
+second argument of `checkFile`, or use [valnivo.eu/check](https://valnivo.eu/check/).
+
+A proof is evidence of what two accounts signed. It is **not a qualified electronic signature**, and it
+does not by itself make an agreement legally binding.
+
+## Without this code
+
+[`PROOF.md`](https://github.com/valnivo-labs/verify/blob/main/PROOF.md) writes the format down in full — where the proof is in the file, how it is
+encoded, and every hash and signature — so the same check can be redone with any SHA-256 and ECDSA
+P-256 implementation. The test in `tests/` does exactly that with `node:crypto`, from the document
+alone.
+
+[`checker/valnivo-checker.html`](https://github.com/valnivo-labs/verify/blob/main/checker/valnivo-checker.html), in the repository, is the same check as one page that runs in a browser with no
+connection: its own policy forbids every request.
+
+## Also exported
+
+- `@valnivo_labs/verify/signing` — a document two people sign, its signed history, and a proof.
+- `@valnivo_labs/verify/loan` — money one person lent another, as one kind of signed document.
+
+## Licence
+
+Apache-2.0. Copyright 2026 Valnivo Labs. Valnivo Labs is a trade name, not a registered company.

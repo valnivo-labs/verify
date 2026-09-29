@@ -1,0 +1,374 @@
+/**
+ * Money one person lent another, written down and signed by both.
+ *
+ * **No money moves and no interest is charged** (owner, 2026-09-28). This is
+ * the acknowledgement two people would otherwise sign on paper: how much, the
+ * day it was lent, and when it is to be paid back. It is not a loan product
+ * and not a debt in the credit sense — the content is a closed set of fields
+ * and `loanProblems` refuses any other, so a rate, a fee or a penalty has
+ * nowhere to go.
+ *
+ * It is one kind of `@valnivo_labs/signing` document: **the lender proposes**
+ * (proposer) and **the borrower signs** (counterparty). Once signed, only the
+ * lender closes it, as *settled* (paid back), *forgiven* (the rest let go) or
+ * *replaced* (a correction both signed took its place).
+ * Repayments are recorded by either and count only once the other confirms.
+ *
+ * **A signed loan is never edited; it is corrected** (owner, 2026-09-29). A
+ * correction is a new loan document whose `replaces` names the one it corrects
+ * and carries what was already paid back under it, so both people sign that
+ * too. Once it is signed the lender closes the old one as *replaced*.
+ */
+import {
+  DOCUMENT_VERSION,
+  documentProblems,
+  newNonce,
+  CORE_ACTS,
+  sha256Hex,
+  stableJson,
+  verifyProof,
+  type HistoryEntry,
+  type Proof,
+  type Verdict,
+  type Kind,
+  type Role,
+  type SignedDocument,
+} from './signing.ts'
+
+export const LOAN: Kind = {
+  kind: 'labs.loan',
+  mayClose: ['proposer'],
+  outcomes: ['settled', 'forgiven', 'replaced'],
+}
+
+export type LoanOutcome = 'settled' | 'forgiven' | 'replaced'
+
+/** The lender proposes and the borrower signs. Fixed: a borrower cannot write "you lent me". */
+export const LENDER: Role = 'proposer'
+export const BORROWER: Role = 'counterparty'
+
+export const NOTE_MAX = 280
+/** Instalments on one loan. A schedule longer than this is a loan book. */
+export const SCHEDULE_MAX = 120
+/** A thousand million in minor units, about ten million euros. Above it, it is a mistake. */
+export const AMOUNT_MAX = 1_000_000_000
+
+export interface Instalment {
+  /** YYYY-MM-DD. */
+  dueOn: string
+  /** Integer minor units of the loan's currency. */
+  amountMinor: number
+}
+
+/**
+ * The loan a correction takes the place of: its id and fingerprint, and how
+ * much of it had been paid back — confirmed by both — when the correction was
+ * made. Signed as part of the correction, so both people agree what carries over.
+ */
+export interface Replaces {
+  documentId: string
+  termsPrint: string
+  /** Integer minor units, in the loan's currency. Counts as paid on the correction. */
+  paidMinor: number
+}
+
+/** What the loan says. Closed on purpose: every field is here, and `loanProblems` refuses any other. */
+export interface LoanContent {
+  /** Integer minor units: cents for a euro. */
+  amountMinor: number
+  /** ISO 4217, upper case. */
+  currency: string
+  /** The day the money was lent. YYYY-MM-DD. */
+  lentOn: string
+  /** When it is paid back: one row for a single date, several for instalments. They add up to `amountMinor`. */
+  schedule: Instalment[]
+  /** What it was for, in the lender's words. Optional, short. */
+  note: string
+  /**
+   * Only on a correction: the signed loan it replaces. **Absent on every other
+   * loan**, and on every loan signed before 0.3.0, whose fingerprints were taken
+   * without it.
+   */
+  replaces?: Replaces
+}
+
+export type LoanDocument = SignedDocument<LoanContent>
+
+const REQUIRED_KEYS = ['amountMinor', 'currency', 'lentOn', 'schedule', 'note']
+const CONTENT_KEYS = [...REQUIRED_KEYS, 'replaces']
+const HEX64 = /^[0-9a-f]{64}$/
+const DATE = /^\d{4}-\d{2}-\d{2}$/
+
+export function isDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !DATE.test(value)) return false
+  const d = new Date(`${value}T00:00:00Z`)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value
+}
+
+const wholeAmount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0 && n <= AMOUNT_MAX
+
+/** Every reason this loan cannot be proposed, as short codes, including the document's own. */
+export function loanProblems(doc: unknown): string[] {
+  const out = documentProblems(doc)
+  if (out.includes('not-document')) return out
+  const d = doc as Record<string, unknown>
+  if (d.kind !== LOAN.kind) out.push('not-a-loan')
+  const c = d.content
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return [...out, 'content']
+  const t = c as Record<string, unknown>
+  for (const key of Object.keys(t)) if (!CONTENT_KEYS.includes(key)) out.push(`unknown-field:${key}`)
+  for (const key of REQUIRED_KEYS) if (!(key in t)) out.push(`missing:${key}`)
+  if (!wholeAmount(t.amountMinor)) out.push('amount')
+  if (typeof t.currency !== 'string' || !/^[A-Z]{3}$/.test(t.currency)) out.push('currency')
+  if (!isDate(t.lentOn)) out.push('lent-on')
+  if (typeof t.note !== 'string' || t.note.length > NOTE_MAX) out.push('note')
+  const schedule = t.schedule
+  if (!Array.isArray(schedule) || schedule.length === 0 || schedule.length > SCHEDULE_MAX) return [...new Set([...out, 'schedule'])]
+  let sum = 0
+  let previous = ''
+  for (const row of schedule as unknown[]) {
+    const r = (row ?? {}) as Record<string, unknown>
+    if (Object.keys(r).length !== 2 || !isDate(r.dueOn) || !wholeAmount(r.amountMinor)) {
+      out.push('instalment')
+      continue
+    }
+    if (isDate(t.lentOn) && (r.dueOn as string) < t.lentOn) out.push('due-before-lent')
+    if (previous && (r.dueOn as string) <= previous) out.push('schedule-order')
+    previous = r.dueOn as string
+    sum += r.amountMinor as number
+  }
+  if (wholeAmount(t.amountMinor) && sum !== t.amountMinor) out.push('schedule-sum')
+  if ('replaces' in t) {
+    const r = (t.replaces ?? {}) as Record<string, unknown>
+    const ok =
+      typeof t.replaces === 'object' &&
+      t.replaces !== null &&
+      !Array.isArray(t.replaces) &&
+      Object.keys(r).length === 3 &&
+      typeof r.documentId === 'string' &&
+      r.documentId.length > 0 &&
+      r.documentId.length <= 128 &&
+      typeof r.termsPrint === 'string' &&
+      HEX64.test(r.termsPrint) &&
+      typeof r.paidMinor === 'number' &&
+      Number.isSafeInteger(r.paidMinor) &&
+      r.paidMinor >= 0
+    if (!ok) out.push('replaces')
+    else if (wholeAmount(t.amountMinor) && (r.paidMinor as number) > t.amountMinor) out.push('paid-exceeds-amount')
+  }
+  return [...new Set(out)]
+}
+
+/** A loan document ready to propose, with a fresh nonce. Check it with `loanProblems`. */
+export function loanDocument(content: LoanContent, names: { lender: string; borrower: string }): LoanDocument {
+  return {
+    version: DOCUMENT_VERSION,
+    kind: LOAN.kind,
+    proposerName: names.lender,
+    counterpartyName: names.borrower,
+    content: {
+      amountMinor: content.amountMinor,
+      currency: content.currency,
+      lentOn: content.lentOn,
+      schedule: content.schedule.map((r) => ({ dueOn: r.dueOn, amountMinor: r.amountMinor })),
+      note: content.note,
+      ...(content.replaces
+        ? { replaces: { documentId: content.replaces.documentId, termsPrint: content.replaces.termsPrint, paidMinor: content.replaces.paidMinor } }
+        : {}),
+    },
+    nonce: newNonce(),
+  }
+}
+
+/**
+ * One date, or equal instalments with the remainder on the last. A helper for
+ * a form; a loan can carry any schedule that adds up.
+ */
+export function evenSchedule(amountMinor: number, firstDueOn: string, count: number, everyMonths = 1): Instalment[] {
+  if (!wholeAmount(amountMinor) || !isDate(firstDueOn) || !Number.isInteger(count) || count < 1 || count > SCHEDULE_MAX) return []
+  const each = Math.floor(amountMinor / count)
+  if (each < 1) return []
+  const [y, m, d] = firstDueOn.split('-').map(Number)
+  const rows: Instalment[] = []
+  for (let i = 0; i < count; i++) {
+    // Clamped to the month's last day, so a schedule starting on the 31st does
+    // not skip February.
+    const monthIndex = m - 1 + i * everyMonths
+    const year = y + Math.floor(monthIndex / 12)
+    const month = ((monthIndex % 12) + 12) % 12
+    const last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
+    const dueOn = `${year}-${String(month + 1).padStart(2, '0')}-${String(Math.min(d, last)).padStart(2, '0')}`
+    rows.push({ dueOn, amountMinor: i === count - 1 ? amountMinor - each * (count - 1) : each })
+  }
+  return rows
+}
+
+// --- Repayments -------------------------------------------------------------
+
+/**
+ * A repayment somebody recorded. **No money moves**: it says money was paid
+ * some other way — a bank transfer, cash — and it counts only once the *other*
+ * person has confirmed it.
+ */
+export interface Repayment {
+  id: string
+  amountMinor: number
+  /** YYYY-MM-DD, the day it was paid. */
+  paidOn: string
+  recordedBy: Role
+  /** Set when the other person agreed it happened. */
+  confirmed: boolean
+}
+
+export function repaymentProblems(r: unknown): string[] {
+  if (!r || typeof r !== 'object') return ['not-repayment']
+  const x = r as Record<string, unknown>
+  const out: string[] = []
+  const keys = ['id', 'amountMinor', 'paidOn', 'recordedBy', 'confirmed']
+  for (const k of Object.keys(x)) if (!keys.includes(k)) out.push(`unknown-field:${k}`)
+  if (typeof x.id !== 'string' || !x.id) out.push('id')
+  if (!wholeAmount(x.amountMinor)) out.push('amount')
+  if (!isDate(x.paidOn)) out.push('paid-on')
+  if (x.recordedBy !== 'proposer' && x.recordedBy !== 'counterparty') out.push('recorded-by')
+  if (typeof x.confirmed !== 'boolean') out.push('confirmed')
+  return out
+}
+
+/** Only the person who did *not* record a repayment may confirm it. */
+export const mayConfirm = (r: Repayment, role: Role): boolean => !r.confirmed && r.recordedBy !== role
+
+/**
+ * What is still owed: the amount less every confirmed repayment, and less what
+ * a correction carried over from the loan it replaces, never below nothing.
+ */
+export function outstanding(loan: LoanContent, repayments: readonly Repayment[]): number {
+  const paid = repayments.filter((r) => r.confirmed).reduce((s, r) => s + r.amountMinor, 0)
+  return Math.max(0, loan.amountMinor - paid - (loan.replaces?.paidMinor ?? 0))
+}
+
+/**
+ * What a correction of a signed loan carries: which loan, and what had been
+ * paid back under it — the confirmed repayments and whatever it had itself
+ * carried from a correction before it.
+ */
+export function replacesFrom(documentId: string, termsPrint: string, loan: LoanContent, repayments: readonly Repayment[]): Replaces {
+  return { documentId, termsPrint, paidMinor: loan.amountMinor - outstanding(loan, repayments) }
+}
+
+/** What the schedule said should have been paid by `onDate`, inclusive. */
+export function dueBy(loan: LoanContent, onDate: string): number {
+  return loan.schedule.filter((r) => r.dueOn <= onDate).reduce((s, r) => s + r.amountMinor, 0)
+}
+
+/**
+ * How far behind the schedule the confirmed repayments are on `onDate`, never
+ * below nothing. A figure, not a judgement: a product states it and says
+ * nothing about it.
+ */
+export function behindBy(loan: LoanContent, repayments: readonly Repayment[], onDate: string): number {
+  const paid = loan.amountMinor - outstanding(loan, repayments)
+  return Math.max(0, dueBy(loan, onDate) - paid)
+}
+
+/**
+ * The instalments still to come, reduced by what has been paid, oldest first:
+ * what a projection should expect to move, and when. A confirmed repayment
+ * pays the earliest instalment first.
+ */
+export function remainingSchedule(loan: LoanContent, repayments: readonly Repayment[]): Instalment[] {
+  let paid = loan.amountMinor - outstanding(loan, repayments)
+  const out: Instalment[] = []
+  for (const row of loan.schedule) {
+    const covered = Math.min(paid, row.amountMinor)
+    paid -= covered
+    if (row.amountMinor - covered > 0) out.push({ dueOn: row.dueOn, amountMinor: row.amountMinor - covered })
+  }
+  return out
+}
+
+/** Fully paid by confirmed repayments. */
+export const isPaidUp = (loan: LoanContent, repayments: readonly Repayment[]): boolean => outstanding(loan, repayments) === 0
+
+// --- The loan's history -------------------------------------------------------
+
+/**
+ * The acts a loan adds to the shared ones. A **repayment** entry's detail is
+ * the hash of its sealed payload (`repaymentDetail`), so the amount is signed
+ * without being written in the clear; a **confirmation**'s detail is the hash
+ * of the repayment entry it confirms, so it cannot be moved to another.
+ */
+export const LOAN_ACTS = ['repayment', 'confirmation'] as const
+
+/** What a repayment entry seals: the amount and day, and a nonce so its hash says nothing. */
+export interface RepaymentPayload {
+  amountMinor: number
+  paidOn: string
+  nonce: string
+}
+
+/** The detail a repayment entry signs. */
+export const repaymentDetail = (p: RepaymentPayload): Promise<string> =>
+  sha256Hex(stableJson({ amountMinor: p.amountMinor, paidOn: p.paidOn, nonce: p.nonce }))
+
+/**
+ * The repayments a chain records, with whether each has been confirmed by the
+ * other person. `payloads` are the opened repayment entries, by entry hash; an
+ * entry whose payload does not hash to its detail is left out, because what it
+ * says is not what was signed.
+ */
+export async function repaymentsFrom(
+  entries: readonly HistoryEntry[],
+  payloads: ReadonlyMap<string, RepaymentPayload>,
+): Promise<Repayment[]> {
+  const out: Repayment[] = []
+  const sorted = [...entries].sort((a, b) => a.seq - b.seq)
+  for (const e of sorted) {
+    if (e.act !== 'repayment') continue
+    const p = payloads.get(e.hash)
+    if (!p || (await repaymentDetail(p)) !== e.detail || !wholeAmount(p.amountMinor) || !isDate(p.paidOn)) continue
+    const confirmed = sorted.some((c) => c.act === 'confirmation' && c.detail === e.hash && c.role !== e.role && c.seq > e.seq)
+    out.push({ id: e.hash, amountMinor: p.amountMinor, paidOn: p.paidOn, recordedBy: e.role, confirmed })
+  }
+  return out
+}
+
+/** The outcome a closing entry recorded, if it is one the loan has. */
+export function closedAs(entries: readonly HistoryEntry[]): LoanOutcome | null {
+  const e = [...entries].reverse().find((x) => x.act === 'closed')
+  return e && (LOAN.outcomes as readonly string[]).includes(e.detail) ? (e.detail as LoanOutcome) : null
+}
+
+/**
+ * A loan's proof checked on its own: everything `verifyProof` checks, plus the
+ * loan's content and every repayment payload against the hash its entry
+ * signed. The repayments it can read are returned, so a verifier can show what
+ * the proof actually says rather than what the page around it prints.
+ */
+export async function verifyLoanProof(proof: Proof): Promise<Verdict & { repayments: Repayment[]; closedAs: LoanOutcome | null }> {
+  const verdict = await verifyProof(proof, LOAN)
+  const problems = [...verdict.problems]
+  for (const p of loanProblems(proof.document)) if (!problems.includes(p)) problems.push(p)
+  const payloads = new Map<string, RepaymentPayload>()
+  for (const [hash, value] of Object.entries(proof.payloads ?? {})) payloads.set(hash, value as unknown as RepaymentPayload)
+  const sorted = [...proof.entries].sort((a, b) => a.seq - b.seq)
+  const signedAt = sorted.find((e) => e.act === 'signed')?.seq ?? Infinity
+  const closedAt = sorted.find((e) => e.act === 'closed')?.seq ?? Infinity
+  for (const e of sorted) {
+    if ((e.act === 'repayment' || e.act === 'confirmation') && (e.seq < signedAt || e.seq > closedAt)) problems.push(`out-of-turn@${e.seq}`)
+    if (!(LOAN_ACTS as readonly string[]).includes(e.act) && !(CORE_ACTS as readonly string[]).includes(e.act)) problems.push(`unknown-act@${e.seq}`)
+    if (e.act === 'repayment') {
+      const p = payloads.get(e.hash)
+      if (!p || (await repaymentDetail(p)) !== e.detail) problems.push(`repayment@${e.seq}`)
+    }
+    if (e.act === 'confirmation' && !proof.entries.some((r) => r.act === 'repayment' && r.hash === e.detail && r.role !== e.role)) {
+      problems.push(`confirmation@${e.seq}`)
+    }
+  }
+  return {
+    ...verdict,
+    problems,
+    authentic: problems.length === 0,
+    repayments: await repaymentsFrom(proof.entries, payloads),
+    closedAs: closedAs(proof.entries),
+  }
+}

@@ -1,0 +1,508 @@
+/**
+ * A document two people sign, the way they would sign one on paper.
+ *
+ * One person **proposes** a document, and proposing is their signature. The
+ * other reads it and **signs** or **declines**; until they answer, the one who
+ * proposed may **withdraw** it. Once both have signed it cannot change: a
+ * different text is a new document. Later it may be **closed**, with an
+ * outcome the product names ("settled", "ended", "fulfilled"), by whichever of
+ * the two the product allows.
+ *
+ * **What the document says is the product's.** Here it is `content`, any JSON
+ * value, together with a `kind` the product chooses so two kinds of document
+ * can never be mistaken for each other. What lives here is what is the same
+ * for every kind: the canonical form, the salted fingerprint both people sign,
+ * the steps and who may take them, and the check that two signatures are over
+ * the same text.
+ *
+ * **Nothing here stores, sends or signs in.** Where a document is kept, how
+ * its text is protected and how the other person hears about it are each
+ * product's own, because the foundation shares no account and no database
+ * between products. Both people are always users of the same product.
+ */
+
+/** Bumped only with a new shape of document. A signed one keeps its own. */
+export const DOCUMENT_VERSION = 1 as const
+
+/**
+ * Prefixed to what is hashed, so a document's fingerprint can never equal the
+ * fingerprint of anything else. **Never rename it**: every signed document's
+ * fingerprint was taken over it.
+ */
+export const FINGERPRINT_CONTEXT = 'Valnivo Labs signed document v1'
+
+export const NAME_MAX = 80
+export const KIND_MAX = 64
+export const NONCE_LENGTH = 43 // 32 random bytes, base64url, no padding
+/** The canonical text, in characters. A document longer than this is a file, not a record. */
+export const CONTENT_MAX = 20_000
+
+export type Role = 'proposer' | 'counterparty'
+
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
+
+export interface SignedDocument<C = Json> {
+  version: typeof DOCUMENT_VERSION
+  /** The product's name for this kind of document, e.g. `valnivo.loan`. Part of what is signed. */
+  kind: string
+  /** The names the two people are known by in the product, as they were when it was proposed. */
+  proposerName: string
+  counterpartyName: string
+  /** What the document says. The product checks its shape; this checks only that it is plain JSON. */
+  content: C
+  /**
+   * 32 random bytes. It makes the fingerprint unguessable: a short document —
+   * an amount and two dates — has few enough variants to try every one and
+   * learn the text from its fingerprint, which is often kept where the text is
+   * not.
+   */
+  nonce: string
+}
+
+const DOCUMENT_KEYS = ['version', 'kind', 'proposerName', 'counterpartyName', 'content', 'nonce']
+
+/** True for JSON a canonical form can be taken of: no undefined, no NaN, no Infinity, no class instances. */
+export function isPlainJson(value: unknown, depth = 0): value is Json {
+  if (depth > 32) return false
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (Array.isArray(value)) return value.every((v) => isPlainJson(v, depth + 1))
+  if (typeof value === 'object') {
+    const proto = Object.getPrototypeOf(value)
+    if (proto !== Object.prototype && proto !== null) return false
+    return Object.values(value as object).every((v) => isPlainJson(v, depth + 1))
+  }
+  return false
+}
+
+/**
+ * JSON with every object's keys sorted, at every depth, so the same content
+ * gives the same text on any device whatever order it was built in.
+ */
+export function stableJson(value: Json): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  const keys = Object.keys(value).sort()
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`
+}
+
+/**
+ * Every reason this cannot be proposed, as short codes; empty means it can.
+ * Codes rather than sentences so each product words them in its own languages.
+ * The product adds its own checks of `content` beside these.
+ */
+export function documentProblems(doc: unknown): string[] {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return ['not-document']
+  const d = doc as Record<string, unknown>
+  const out: string[] = []
+  for (const key of Object.keys(d)) if (!DOCUMENT_KEYS.includes(key)) out.push(`unknown-field:${key}`)
+  for (const key of DOCUMENT_KEYS) if (!(key in d)) out.push(`missing:${key}`)
+  if (d.version !== DOCUMENT_VERSION) out.push('version')
+  if (typeof d.kind !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+)+$/.test(d.kind) || d.kind.length > KIND_MAX) out.push('kind')
+  for (const key of ['proposerName', 'counterpartyName'] as const) {
+    const v = d[key]
+    if (typeof v !== 'string' || !v.trim() || v.length > NAME_MAX) out.push(key === 'proposerName' ? 'proposer-name' : 'counterparty-name')
+  }
+  if (typeof d.nonce !== 'string' || d.nonce.length !== NONCE_LENGTH || !/^[A-Za-z0-9_-]+$/.test(d.nonce)) out.push('nonce')
+  if (!isPlainJson(d.content)) out.push('content')
+  else if (stableJson(d.content).length > CONTENT_MAX) out.push('content-too-long')
+  return out
+}
+
+/** 32 random bytes, base64url. */
+export function newNonce(): string {
+  const bytes = new Uint8Array(32)
+  globalThis.crypto.getRandomValues(bytes)
+  let s = ''
+  for (const b of bytes) s += String.fromCharCode(b)
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+/** The text both people sign: the context line, then the document as stable JSON. */
+export function canonical(doc: SignedDocument<unknown>): string {
+  const { version, kind, proposerName, counterpartyName, content, nonce } = doc
+  return `${FINGERPRINT_CONTEXT}\n${stableJson({ version, kind, proposerName, counterpartyName, content: content as Json, nonce })}`
+}
+
+/** SHA-256 of the canonical text, 64 hex characters. */
+export async function fingerprint(doc: SignedDocument<unknown>): Promise<string> {
+  const bytes = new TextEncoder().encode(canonical(doc))
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', bytes))
+  return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** The fingerprint's first sixteen characters in fours, for comparing on paper or aloud. */
+export const shortPrint = (print: string): string => print.slice(0, 16).match(/.{4}/g)?.join(' ') ?? ''
+
+// --- The steps ------------------------------------------------------------
+
+/**
+ * - `proposed`: the proposer has signed and the counterparty has not answered.
+ * - `signed`: both have signed. The text can no longer change.
+ * - `declined`: the counterparty said no. Nothing was agreed.
+ * - `withdrawn`: the proposer took it back before it was answered.
+ * - `closed`: it has run its course, with an outcome the product names.
+ */
+export type Status = 'proposed' | 'signed' | 'declined' | 'withdrawn' | 'closed'
+export type Action = 'sign' | 'decline' | 'withdraw' | 'close'
+
+export const STATUSES: readonly Status[] = ['proposed', 'signed', 'declined', 'withdrawn', 'closed']
+/** Once here, nothing more can happen to it. */
+export const FINAL: readonly Status[] = ['declined', 'withdrawn', 'closed']
+
+export interface Step {
+  from: Status
+  action: Action
+  by: Role
+  to: Status
+}
+
+/** The steps every kind of document shares. Anything not in a kind's table is refused. */
+export const CORE_STEPS: readonly Step[] = [
+  { from: 'proposed', action: 'sign', by: 'counterparty', to: 'signed' },
+  { from: 'proposed', action: 'decline', by: 'counterparty', to: 'declined' },
+  { from: 'proposed', action: 'withdraw', by: 'proposer', to: 'withdrawn' },
+]
+
+/**
+ * A kind of document: its name, who may close it once signed, and the
+ * outcomes a closing may record. A kind nobody may close stays signed for
+ * ever, which is right for some documents.
+ */
+export interface Kind {
+  kind: string
+  mayClose: readonly Role[]
+  outcomes: readonly string[]
+}
+
+/** The whole table for a kind: the shared steps plus its closings. Database rules should allow exactly these. */
+export function stepsFor(kind: Kind): Step[] {
+  return [...CORE_STEPS, ...kind.mayClose.map((by) => ({ from: 'signed' as const, action: 'close' as const, by, to: 'closed' as const }))]
+}
+
+/** Where `action` by `role` takes a document of this kind, or null if it may not. */
+export function next(kind: Kind, status: Status, action: Action, role: Role): Status | null {
+  return stepsFor(kind).find((s) => s.from === status && s.action === action && s.by === role)?.to ?? null
+}
+
+/** What `role` may do right now. */
+export function actionsFor(kind: Kind, status: Status, role: Role): Action[] {
+  return stepsFor(kind)
+    .filter((s) => s.from === status && s.by === role)
+    .map((s) => s.action)
+}
+
+// --- Signatures -----------------------------------------------------------
+
+/**
+ * One person's signature: which role, the fingerprint they signed, and when.
+ * `at` should come from somewhere neither person controls — a database's own
+ * clock — or it proves nothing about when.
+ */
+export interface Signature {
+  role: Role
+  print: string
+  /** Milliseconds since 1970, from the product's server clock. */
+  at: number
+}
+
+/**
+ * Why these signatures do not show that both people signed *this* document;
+ * empty means they do. Recomputes the fingerprint rather than trusting one
+ * stored beside it.
+ */
+export async function signatureProblems(doc: SignedDocument<unknown>, signatures: readonly Signature[]): Promise<string[]> {
+  const print = await fingerprint(doc)
+  const out: string[] = []
+  for (const role of ['proposer', 'counterparty'] as const) {
+    const mine = signatures.filter((s) => s.role === role)
+    if (mine.length === 0) out.push(`unsigned:${role}`)
+    else if (mine.length > 1) out.push(`twice:${role}`)
+    else if (mine[0].print !== print) out.push(`other-text:${role}`)
+    else if (!Number.isFinite(mine[0].at) || mine[0].at <= 0) out.push(`no-time:${role}`)
+  }
+  const p = signatures.find((s) => s.role === 'proposer')
+  const c = signatures.find((s) => s.role === 'counterparty')
+  if (p && c && c.at < p.at) out.push('counterparty-before-proposer')
+  return out
+}
+
+// --- The history ----------------------------------------------------------
+
+/**
+ * Everything that happens to a document, as a chain of signed entries: the
+ * proposal, the answer, and whatever the kind adds after that (a repayment, a
+ * confirmation, a closing). **Nothing in it can be edited or removed without
+ * it showing**:
+ *
+ * - each entry is **signed** with a key made on the device of the person who
+ *   acted, over a statement naming the document, the entry's place in the
+ *   chain, the act, the fingerprint of the text and the entry before it;
+ * - each entry carries the **hash of the one before**, so changing or dropping
+ *   one breaks every entry after it;
+ * - a product stores it where entries can only be **appended**, and stamps each
+ *   with its own server's time, which is outside the chain because neither
+ *   person can know it in advance — and outside their reach once written.
+ *
+ * `verifyHistory` checks all of it from the entries alone.
+ */
+export const HISTORY_CONTEXT = 'Valnivo Labs signed history v1'
+
+/** The acts every kind shares. A kind may add its own, which `verifyHistory` accepts as written. */
+export const CORE_ACTS = ['proposed', 'opened', 'signed', 'declined', 'withdrawn', 'closed'] as const
+
+export interface UnsignedEntry {
+  /** 0 for the proposal, then 1, 2, … with no gap. */
+  seq: number
+  act: string
+  role: Role
+  /** The account that acted, as the product knows it. */
+  byUid: string
+  /** The fingerprint of the document's text, the same in every entry. */
+  termsPrint: string
+  /** The previous entry's hash; empty for the first. */
+  prevHash: string
+  /**
+   * What else this act says, fixed by the kind: an outcome for a closing, the
+   * hash of a sealed payload, the hash of the entry being confirmed. Never
+   * anything private in the clear — it is stored where the text is not.
+   */
+  detail: string
+}
+
+export interface HistoryEntry extends UnsignedEntry {
+  /** The public half of the key that signed it, as a JWK (ECDSA P-256). */
+  publicKey: JsonWebKey
+  /** ECDSA P-256 / SHA-256 over `statement`, base64url. */
+  signature: string
+  /** SHA-256 of the entry's canonical form, including its signature. */
+  hash: string
+  /** The product's server time. Not signed and not hashed: see above. */
+  at?: number
+}
+
+/** What a person's device signs for one entry. */
+export function statement(documentId: string, e: UnsignedEntry): string {
+  return `${HISTORY_CONTEXT}\n${stableJson({
+    documentId,
+    seq: e.seq,
+    act: e.act,
+    role: e.role,
+    byUid: e.byUid,
+    termsPrint: e.termsPrint,
+    prevHash: e.prevHash,
+    detail: e.detail,
+  })}`
+}
+
+const publicJwkOf = (k: JsonWebKey): { kty: string; crv: string; x: string; y: string } => ({ kty: k.kty ?? '', crv: k.crv ?? '', x: k.x ?? '', y: k.y ?? '' })
+
+/** The hash of an entry: its statement, its public key and its signature. */
+export async function entryHash(documentId: string, e: Omit<HistoryEntry, 'hash' | 'at'>): Promise<string> {
+  return sha256Hex(`${statement(documentId, e)}\n${stableJson(publicJwkOf(e.publicKey))}\n${e.signature}`)
+}
+
+export async function sha256Hex(text: string): Promise<string> {
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
+  return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+const b64url = (bytes: Uint8Array): string => {
+  let s = ''
+  for (const b of bytes) s += String.fromCharCode(b)
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+const fromB64url = (text: string): Uint8Array<ArrayBuffer> => {
+  const s = atob(text.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((text.length + 3) % 4))
+  const out = new Uint8Array(new ArrayBuffer(s.length))
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i)
+  return out
+}
+
+const ECDSA = { name: 'ECDSA', namedCurve: 'P-256' } as const
+const SIGN = { name: 'ECDSA', hash: 'SHA-256' } as const
+
+/**
+ * A signing key for this device. **The private half cannot be exported**, so
+ * it can sign and cannot be copied off the device, not even by the page that
+ * made it; a product keeps the `CryptoKey` itself (IndexedDB can hold one).
+ */
+export async function newSigningKey(): Promise<{ privateKey: CryptoKey; publicKey: JsonWebKey }> {
+  const pair = await globalThis.crypto.subtle.generateKey(ECDSA, false, ['sign', 'verify'])
+  const publicKey = await globalThis.crypto.subtle.exportKey('jwk', pair.publicKey)
+  return { privateKey: pair.privateKey, publicKey: publicJwkOf(publicKey) as JsonWebKey }
+}
+
+/** Signs one entry and seals it into the chain. */
+export async function signEntry(
+  documentId: string,
+  unsigned: UnsignedEntry,
+  key: { privateKey: CryptoKey; publicKey: JsonWebKey },
+): Promise<HistoryEntry> {
+  const bytes = new TextEncoder().encode(statement(documentId, unsigned))
+  const signature = b64url(new Uint8Array(await globalThis.crypto.subtle.sign(SIGN, key.privateKey, bytes)))
+  const publicKey = publicJwkOf(key.publicKey) as JsonWebKey
+  const hash = await entryHash(documentId, { ...unsigned, publicKey, signature })
+  return { ...unsigned, publicKey, signature, hash }
+}
+
+/** The next entry's place and link, given the chain so far. */
+export function nextLink(entries: readonly HistoryEntry[]): { seq: number; prevHash: string } {
+  const last = entries[entries.length - 1]
+  return { seq: entries.length, prevHash: last ? last.hash : '' }
+}
+
+/**
+ * Why this chain does not stand, as short codes with the entry's number; empty
+ * means every entry is signed by the key it names, links to the one before,
+ * hashes to what it says, and is about this text. It checks the shape of the
+ * chain and the signatures, never who is *allowed* to act — that is
+ * `stepsFor` and the product's rules.
+ */
+export async function verifyHistory(documentId: string, entries: readonly HistoryEntry[], termsPrint: string): Promise<string[]> {
+  const out: string[] = []
+  const sorted = [...entries].sort((a, b) => a.seq - b.seq)
+  let prev = ''
+  for (let i = 0; i < sorted.length; i++) {
+    const e = sorted[i]
+    const at = `@${e.seq}`
+    if (e.seq !== i) out.push(`gap${at}`)
+    if (e.prevHash !== prev) out.push(`broken-link${at}`)
+    if (e.termsPrint !== termsPrint) out.push(`other-text${at}`)
+    if (i === 0 && (e.act !== 'proposed' || e.role !== 'proposer')) out.push(`not-a-proposal${at}`)
+    if ((await entryHash(documentId, e)) !== e.hash) out.push(`hash${at}`)
+    try {
+      const key = await globalThis.crypto.subtle.importKey('jwk', { ...publicJwkOf(e.publicKey), ext: true } as JsonWebKey, ECDSA, false, ['verify'])
+      const ok = await globalThis.crypto.subtle.verify(SIGN, key, fromB64url(e.signature), new TextEncoder().encode(statement(documentId, e)))
+      if (!ok) out.push(`signature${at}`)
+    } catch {
+      out.push(`signature${at}`)
+    }
+    prev = e.hash
+  }
+  if (sorted.length === 0) out.push('empty')
+  return out
+}
+
+/**
+ * The status the chain arrives at, replaying only the core acts through the
+ * kind's steps. Null when an act is one the steps do not allow from where the
+ * chain was — a chain a product's rules should never have accepted.
+ */
+export function statusFromHistory(kind: Kind, entries: readonly HistoryEntry[]): Status | null {
+  let status: Status | null = null
+  for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
+    if (e.seq === 0) {
+      if (e.act !== 'proposed' || e.role !== 'proposer') return null
+      status = 'proposed'
+      continue
+    }
+    const action = ({ signed: 'sign', declined: 'decline', withdrawn: 'withdraw', closed: 'close' } as Record<string, Action>)[e.act]
+    if (!action) continue // 'opened', or an act of the kind's own that moves no status
+    const to: Status | null = status ? next(kind, status, action, e.role) : null
+    if (!to) return null
+    status = to
+  }
+  return status
+}
+
+// --- A proof: the document and its history, to carry and check anywhere ------
+
+/**
+ * Everything needed to check a signed document **without asking anybody**: the
+ * text both signed and every entry of its history. A product embeds it in the
+ * file it hands out (a PDF, a download) and reads it back to verify.
+ *
+ * What a proof alone can show is that the text is the one signed, every entry
+ * is signed by the key it names, and none was changed, reordered or removed
+ * from the part it carries. **What it cannot show on its own is that the chain
+ * is the one the product recorded**, rather than one somebody built with keys
+ * of their own — that is `anchorProblems`, against the record the product
+ * keeps where only the document's own writes can change it.
+ */
+export const PROOF_FORMAT = 'valnivo-labs-proof-v1'
+
+export interface Proof {
+  format: typeof PROOF_FORMAT
+  documentId: string
+  document: SignedDocument<unknown>
+  entries: HistoryEntry[]
+  /** Opened payloads of entries whose detail is a payload's hash, by entry hash. The kind reads them. */
+  payloads?: Record<string, Json>
+}
+
+/** What the product's server holds about a document, readable by anyone who has the fingerprint. */
+export interface Anchor {
+  documentId: string
+  termsPrint: string
+  historyCount: number
+  lastHash: string
+  /**
+   * Every entry's hash, in order — a list the product lets grow by one entry at
+   * a time and never change. With it an **older copy** is checked entry by
+   * entry; with the last hash alone, a shorter history somebody built with keys
+   * of their own would pass for one.
+   */
+  hashes: string[]
+}
+
+export interface Verdict {
+  /** True only when there is nothing in `problems`. */
+  authentic: boolean
+  problems: string[]
+  /** Where the history leaves the document, when it can be read. */
+  status: Status | null
+  termsPrint: string
+}
+
+/** The proof as one line of text, safe inside a PDF comment or a file. */
+export function encodeProof(proof: Proof): string {
+  const bytes = new TextEncoder().encode(stableJson(proof as unknown as Json))
+  return b64url(bytes)
+}
+
+export function decodeProof(text: string): Proof | null {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(fromB64url(text.trim()))) as Proof
+    return value && value.format === PROOF_FORMAT && Array.isArray(value.entries) ? value : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Checks a proof on its own: the document's shape, that its fingerprint is the
+ * one every entry signed, the whole chain, and that the steps it records are
+ * ones the kind allows. The kind's own checks of the content and payloads are
+ * added by the kind's package.
+ */
+export async function verifyProof(proof: Proof, kind: Kind): Promise<Verdict> {
+  const problems = documentProblems(proof.document)
+  if (proof.document?.kind !== kind.kind) problems.push('other-kind')
+  const termsPrint = problems.includes('not-document') ? '' : await fingerprint(proof.document)
+  problems.push(...(await verifyHistory(proof.documentId, proof.entries, termsPrint)))
+  const status = statusFromHistory(kind, proof.entries)
+  if (!status) problems.push('steps')
+  return { authentic: problems.length === 0, problems, status, termsPrint }
+}
+
+/**
+ * Whether the proof's chain is the one the product recorded. `anchor` is null
+ * when the product holds no record for this fingerprint — which means the
+ * document was never signed there, whatever its signatures say.
+ *
+ * A proof shorter than the record is **not** a forgery: it is an older copy,
+ * and the later entries exist. It is reported as `older-copy`, and the caller
+ * says so rather than calling it false.
+ */
+export function anchorProblems(proof: Proof, termsPrint: string, anchor: Anchor | null): string[] {
+  if (!anchor) return ['no-record']
+  const out: string[] = []
+  if (anchor.termsPrint !== termsPrint || anchor.documentId !== proof.documentId) out.push('other-record')
+  if (anchor.hashes.length !== anchor.historyCount || anchor.hashes[anchor.hashes.length - 1] !== anchor.lastHash) out.push('record-inconsistent')
+  const sorted = [...proof.entries].sort((a, b) => a.seq - b.seq)
+  if (sorted.length > anchor.historyCount) out.push('longer-than-record')
+  else if (sorted.some((e, i) => anchor.hashes[i] !== e.hash)) out.push('not-the-recorded-chain')
+  else if (sorted.length < anchor.historyCount) out.push('older-copy')
+  return out
+}
