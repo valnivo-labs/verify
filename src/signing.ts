@@ -506,3 +506,145 @@ export function anchorProblems(proof: Proof, termsPrint: string, anchor: Anchor 
   else if (sorted.length < anchor.historyCount) out.push('older-copy')
   return out
 }
+
+// --- Issued documents: one signer, the issuer --------------------------------
+
+/**
+ * A document with **one signer**: the issuer, which is Valnivo Labs or one of
+ * its products, never a person. The issuer signs it once with a key that is the
+ * issuer's alone and lives where no bundle can reach it (a KMS key the signing
+ * service asks to sign); anybody checks the signature against the issuer's
+ * **published, pinned** public key. `docs/issued-documents.md` is the design.
+ *
+ * **An issued document says only what its issuer computed or knows itself.**
+ * A signing service must never stamp content a client sent as "issued by" it —
+ * a kind's content is built by the service from what it holds, or is a
+ * fingerprint and a time. That rule is the service's; here is the format.
+ */
+export const ISSUED_FORMAT = 'valnivo-labs-issued-v1'
+
+/**
+ * Prefixed to the signed bytes, so an issued signature can never be mistaken
+ * for a history entry's. **Never rename it**: every issued signature is over it.
+ */
+export const ISSUED_CONTEXT = 'Valnivo Labs issued document v1'
+
+export const ISSUED_VERSION = 1 as const
+export const ISSUER_MAX = 32
+
+export interface IssuedDocument<C = Json> {
+  version: typeof ISSUED_VERSION
+  /** Which kind of issued document, e.g. `labs.timestamp`. Part of what is signed. */
+  kind: string
+  /** The issuer's id: `valnivo-labs`, `valnivo`, `moien`, `sway`. */
+  issuer: string
+  /** ISO 8601 in UTC, from the issuer's own clock. The signature fixes it; only the issuer's honesty makes it true. */
+  issuedAt: string
+  content: C
+  /** 32 random bytes, so no two issued documents are the same bytes. */
+  nonce: string
+}
+
+export interface IssuedProof {
+  format: typeof ISSUED_FORMAT
+  document: IssuedDocument<unknown>
+  /** Which of the issuer's keys signed it. */
+  keyId: string
+  /** ECDSA P-256 / SHA-256 over `issuedBytes`, raw r‖s (IEEE P1363), base64url. */
+  signature: string
+}
+
+const ISSUED_KEYS = ['version', 'kind', 'issuer', 'issuedAt', 'content', 'nonce']
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/
+
+/** Every reason this is not an issued document, as short codes; empty means it is one. */
+export function issuedProblems(doc: unknown): string[] {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return ['not-document']
+  const d = doc as Record<string, unknown>
+  const out: string[] = []
+  for (const key of Object.keys(d)) if (!ISSUED_KEYS.includes(key)) out.push(`unknown-field:${key}`)
+  for (const key of ISSUED_KEYS) if (!(key in d)) out.push(`missing:${key}`)
+  if (d.version !== ISSUED_VERSION) out.push('version')
+  if (typeof d.kind !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+)+$/.test(d.kind) || d.kind.length > KIND_MAX) out.push('kind')
+  if (typeof d.issuer !== 'string' || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(d.issuer) || d.issuer.length > ISSUER_MAX) out.push('issuer')
+  if (typeof d.issuedAt !== 'string' || !ISO_UTC.test(d.issuedAt) || Number.isNaN(Date.parse(d.issuedAt))) out.push('issued-at')
+  if (typeof d.nonce !== 'string' || d.nonce.length !== NONCE_LENGTH || !/^[A-Za-z0-9_-]+$/.test(d.nonce)) out.push('nonce')
+  if (!isPlainJson(d.content)) out.push('content')
+  else if (stableJson(d.content).length > CONTENT_MAX) out.push('content-too-long')
+  return out
+}
+
+/** The text the issuer signs: the context line, then the document as stable JSON. */
+export function issuedText(doc: IssuedDocument<unknown>): string {
+  const { version, kind, issuer, issuedAt, content, nonce } = doc
+  return `${ISSUED_CONTEXT}\n${stableJson({ version, kind, issuer, issuedAt, content: content as Json, nonce })}`
+}
+
+/** The bytes the issuer signs. A KMS key signs their SHA-256 (`EC_SIGN_P256_SHA256`). */
+export const issuedBytes = (doc: IssuedDocument<unknown>): Uint8Array<ArrayBuffer> => new TextEncoder().encode(issuedText(doc))
+
+/** SHA-256 of the signed bytes, hex: the digest a KMS `asymmetricSign` is given, and a name for the document. */
+export const issuedDigest = (doc: IssuedDocument<unknown>): Promise<string> => sha256Hex(issuedText(doc))
+
+/**
+ * A DER `ECDSA-Sig-Value` (what Cloud KMS and OpenSSL return) as the raw 64-byte
+ * r‖s this format carries. Null when it is not one.
+ */
+export function derToP1363(der: Uint8Array): Uint8Array<ArrayBuffer> | null {
+  const int = (at: number): { value: Uint8Array; next: number } | null => {
+    if (der[at] !== 0x02) return null
+    const len = der[at + 1]
+    if (len === undefined || len < 1 || len > 33 || at + 2 + len > der.length) return null
+    let value = der.slice(at + 2, at + 2 + len)
+    while (value.length > 32 && value[0] === 0) value = value.slice(1)
+    return value.length > 32 ? null : { value, next: at + 2 + len }
+  }
+  if (der[0] !== 0x30 || der[1] !== der.length - 2) return null
+  const r = int(2)
+  const s = r && int(r.next)
+  if (!r || !s || s.next !== der.length) return null
+  const out = new Uint8Array(new ArrayBuffer(64))
+  out.set(r.value, 32 - r.value.length)
+  out.set(s.value, 64 - s.value.length)
+  return out
+}
+
+/** The proof, from a document and the raw r‖s signature its issuer's key made over `issuedBytes`. */
+export const assembleIssued = (document: IssuedDocument<unknown>, keyId: string, signatureP1363: Uint8Array): IssuedProof => ({
+  format: ISSUED_FORMAT,
+  document,
+  keyId,
+  signature: b64url(signatureP1363),
+})
+
+/**
+ * Signs with a WebCrypto key. **For tests and a local issuer only**: a real
+ * issuer's private key never sits in a process that runs this — it is a KMS key.
+ */
+export async function signIssued(document: IssuedDocument<unknown>, keyId: string, privateKey: CryptoKey): Promise<IssuedProof> {
+  const signature = new Uint8Array(await globalThis.crypto.subtle.sign(SIGN, privateKey, issuedBytes(document)))
+  return assembleIssued(document, keyId, signature)
+}
+
+/** Whether the signature is the named public key's over this document. Checks nothing else. */
+export async function issuedSignatureHolds(proof: IssuedProof, publicKey: JsonWebKey): Promise<boolean> {
+  try {
+    const key = await globalThis.crypto.subtle.importKey('jwk', { ...publicJwkOf(publicKey), ext: true } as JsonWebKey, ECDSA, false, ['verify'])
+    return await globalThis.crypto.subtle.verify(SIGN, key, fromB64url(proof.signature), issuedBytes(proof.document))
+  } catch {
+    return false
+  }
+}
+
+export function encodeIssued(proof: IssuedProof): string {
+  return b64url(new TextEncoder().encode(stableJson(proof as unknown as Json)))
+}
+
+export function decodeIssued(text: string): IssuedProof | null {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(fromB64url(text.trim()))) as IssuedProof
+    return value && value.format === ISSUED_FORMAT && typeof value.keyId === 'string' && typeof value.signature === 'string' ? value : null
+  } catch {
+    return null
+  }
+}

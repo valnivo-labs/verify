@@ -130,3 +130,74 @@ history. For Valnivo the record of fingerprint `P` is the Firestore document `lo
 **If the product is gone**, so is the record, and the best a check can say is §4 and §5: this is the
 text two keys signed, unchanged. Which accounts those keys belonged to is then only what the entries
 say (`byUid`, and for Valnivo the verified address in the `detail` of the proposal and the opening).
+
+## 7. Issued documents: `valnivo-labs-issued-v1`
+
+An **issued** document has one signer: the issuer — Valnivo Labs or one of its products, never a
+person — with a key that is the issuer's alone. It is checked against the issuer's **published public
+key**, not against a record. A file carries either a two-party proof (§1–§6) or an issued one.
+
+**Where it is.** One line, `%VALNIVO-ISSUED-V1 <proof>` — the same mark for every issuer, since the
+issuer is named inside. For a timestamp the line is usually the whole of a small file kept beside the
+file it is about, because a file cannot carry its own fingerprint. `<proof>` is base64url without
+padding of the UTF-8 bytes of the canonical JSON (§2) of
+
+```
+{ "format": "valnivo-labs-issued-v1",
+  "document": { "version": 1, "kind": "<e.g. labs.timestamp>", "issuer": "<issuer id>",
+                "issuedAt": "<ISO 8601, UTC>", "content": { … }, "nonce": "<43 characters>" },
+  "keyId": "<which of the issuer's keys>",
+  "signature": "<base64url>" }
+```
+
+**The check.**
+
+1. **The signed bytes** are the UTF-8 bytes of `Valnivo Labs issued document v1\n` followed by the
+   canonical JSON of the six fields of `document`. The different first line means an issued signature
+   can never pass for a history entry's (§4), nor one for the other.
+2. **Find the key**: in the issuers list, the entry whose `issuer` is `document.issuer` and whose
+   `keyId` is the proof's. None means the document is not the issuer's — or the list you hold is older
+   than the key.
+3. **The signature** verifies over the signed bytes with ECDSA P-256 and SHA-256, raw 64-byte `r‖s`
+   (IEEE P1363), base64url — as in §4.
+4. **The key's life**: `validFrom ≤ issuedAt`, and `issuedAt < validUntil` when that is set. When the
+   key has a `revokedAt`, a document with `issuedAt ≥ revokedAt` is not the issuer's.
+5. **The kind's own rules** (below).
+
+**The issuers list** is published at `https://valnivo.eu/.well-known/valnivo-labs-issuers.json`: an
+array of `{issuer, name, keyId, publicKey: {kty, crv, x, y}, validFrom, validUntil, revokedAt}`. A
+checker may pin a copy and work offline, but **a pinned copy does not learn of a revocation**; an
+online check should read the published list.
+
+**What it shows, and what it does not.** That the issuer's key signed exactly this document. The
+`issuedAt` is **the issuer's own claim**: the signature fixes it, and only the issuer's honesty makes
+it true, as with a stamp on paper. A revocation is a limit rather than a cure — whoever held a stolen
+key could date a document before `revokedAt`. The issuer vouches for nothing but what the kind says it
+vouches for. This is **not a qualified electronic seal** under eIDAS, which needs a certificate from a
+qualified trust service provider.
+
+### `labs.timestamp` — this fingerprint existed at this time
+
+`content` is exactly `{ "sha256": "<64 lowercase hex characters>" }`, the SHA-256 of the bytes that
+were timestamped; any other field makes it not authentic. The issuer is sent the fingerprint and never
+the file. To check a timestamp *of a file*, also compute that file's SHA-256 and compare: equal means
+these bytes existed at `issuedAt`; different means the timestamp is of other bytes. It says nothing
+about what the file says or who holds it.
+
+### `labs.document` — a file issued by Valnivo Labs or a product, its proof inside it
+
+The issuer — `valnivo-labs`, or a product — vouches that **it issued this file**. `content` is exactly
+`{ "sha256", "name", "mediaType" }` and optionally `"title"`: the SHA-256 of the file as issued, the
+file's name, its media type and what the issuer calls it. Any other field makes it not authentic.
+
+**The proof is inside the file**, on the **last line beginning `%VALNIVO-ISSUED-V1 `** — in a PDF, just
+before the final `%%EOF`, where a line beginning `%` is a comment and no offset moves; in any other file,
+as its last line. To check it:
+
+1. Find that last line, and check the proof on it as above (steps 1–5).
+2. **Take the line out** — from its `%` to and including its `\n` — and hash what is left with SHA-256.
+3. It must equal `content.sha256`. If it does not, the file around the proof is not the file that was
+   issued: something in it was changed.
+
+It shows that the issuer's key issued exactly this file at `issuedAt`. What the file says is the
+issuer's statement, and only as trustworthy as the issuer.

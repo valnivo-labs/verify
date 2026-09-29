@@ -84,6 +84,24 @@ Every document is checked for everything above. These kinds also have their own 
 A document of any other kind is reported as `unknown-kind`, with `signaturesHold` saying whether
 everything every kind shares holds.
 
+## Issued documents
+
+A document can also be **issued**: signed once by Valnivo Labs or one of its products, with a key that
+is the issuer's alone, and checked against that issuer's **pinned public key** rather than a record
+(PROOF.md §7). The first kind is `labs.timestamp`: the issuer's signed statement that a file's
+SHA-256 existed at a time — the issuer is sent the fingerprint and never the file.
+
+```js
+import { checkFile } from '@valnivo_labs/verify'
+
+const result = await checkFile(stampBytes, undefined, { subject: fileBytes })
+result.outcome // 'issued', 'other-file', 'unknown-issuer', 'key-revoked', 'outside-key-validity' or 'not-authentic'
+```
+
+`ISSUERS` is the pinned list; the published one is at `https://valnivo.eu/.well-known/valnivo-labs-issuers.json`,
+and only that one learns of a revocation. An issued time is **the issuer's own claim**, and a timestamp
+says nothing about what the file says or who holds it. It is not a qualified electronic seal.
+
 ## Also exported
 
 - `@valnivo_labs/verify/signing` — a document two people sign, of any kind: its canonical form, fingerprint, signed history and proof.

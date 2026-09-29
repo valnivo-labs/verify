@@ -1,7 +1,7 @@
 {
   "name": "@valnivo_labs/verify",
-  "version": "0.1.4",
-  "description": "Checks that a document signed in a Valnivo Labs product is authentic, with nothing but the file: the text is the one both people signed, and every step of its history is signed and unbroken. Any kind of document; the format is written down in PROOF.md.",
+  "version": "0.2.0",
+  "description": "Checks that a document signed in a Valnivo Labs product is authentic, with nothing but the file: the text is the one both people signed, and every step of its history is signed and unbroken. Any kind of document, and documents Valnivo Labs or a product issued itself, against its pinned key; the format is written down in PROOF.md.",
   "license": "Apache-2.0",
   "author": "Valnivo Labs",
   "homepage": "https://github.com/valnivo-labs/verify#readme",

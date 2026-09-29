@@ -45,3 +45,34 @@ test('a signed document of a kind this checker does not know: its signatures are
   assert.match(r.stdout, /^SIGNATURES HOLD/)
   assert.match(r.stdout, /Kind: +test\.flat-share/)
 })
+
+test('an issued document: issued with the list that holds its key, exit 0; changed, exit 1; unknown issuer, exit 1', async () => {
+  const { ISSUED_VERSION, encodeIssued, newNonce, signIssued } = await import('../src/signing.ts')
+  const { issuedLine } = await import('../src/index.ts')
+  const { createHash, webcrypto } = await import('node:crypto')
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const pair = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const jwk = await webcrypto.subtle.exportKey('jwk', pair.publicKey)
+  const body = Buffer.from('An attestation, issued as a test.\n')
+  const doc = {
+    version: ISSUED_VERSION, kind: 'labs.document', issuer: 'valnivo-labs', issuedAt: '2026-09-29T18:00:00Z',
+    content: { sha256: createHash('sha256').update(body).digest('hex'), name: 'note.txt', mediaType: 'text/plain' }, nonce: newNonce(),
+  }
+  const proof = await signIssued(doc, 'cli-1', pair.privateKey)
+  const dir = mkdtempSync(join(tmpdir(), 'verify-cli-'))
+  const file = join(dir, 'note.txt')
+  writeFileSync(file, Buffer.concat([body, Buffer.from(`${issuedLine(encodeIssued(proof))}\n`)]))
+  const list = join(dir, 'issuers.json')
+  writeFileSync(list, JSON.stringify([{ issuer: 'valnivo-labs', name: 'Valnivo Labs', keyId: 'cli-1', publicKey: { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y }, validFrom: '2026-01-01T00:00:00Z', validUntil: null, revokedAt: null }]))
+  const ok = run(file, '--issuers', list)
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr)
+  assert.match(ok.stdout, /^ISSUED by Valnivo Labs/)
+  assert.equal(run(file).status, 1, 'a key this copy does not pin')
+  const changed = join(dir, 'changed.txt')
+  writeFileSync(changed, Buffer.concat([Buffer.from('An attestation, changed.\n'), Buffer.from(`${issuedLine(encodeIssued(proof))}\n`)]))
+  const bad = run(changed, '--issuers', list)
+  assert.equal(bad.status, 1)
+  assert.match(bad.stdout, /changed after it was issued/)
+})
