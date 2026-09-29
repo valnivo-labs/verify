@@ -1,0 +1,64 @@
+# Makes a GitHub release: the offline checker built here from its source, the npm
+# tarball, PROOF.md and their SHA-256 sums, each attested as built by this
+# workflow. Manual only.
+#
+# It refuses unless the checker it builds is byte for byte the file committed
+# here and the file https://valnivo.eu/valnivo-checker.html serves, so there is
+# one fingerprint for the official checker wherever it is found.
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run build:checker
+      - name: One checker, one fingerprint
+        run: |
+          built=$(sha256sum checker/dist/valnivo-checker.html | cut -d' ' -f1)
+          committed=$(sha256sum checker/valnivo-checker.html | cut -d' ' -f1)
+          served=$(curl -fsSL https://valnivo.eu/valnivo-checker.html | sha256sum | cut -d' ' -f1)
+          echo "built     $built"
+          echo "committed $committed"
+          echo "served    $served"
+          [ "$built" = "$committed" ] || { echo "::error::the committed checker is not what its source builds"; exit 1; }
+          [ "$built" = "$served" ] || { echo "::error::valnivo.eu serves a different checker: deploy the site or regenerate this repository"; exit 1; }
+          echo "CHECKER_SHA256=$built" >> "$GITHUB_ENV"
+      - name: Gather the files
+        run: |
+          mkdir release
+          cp checker/dist/valnivo-checker.html PROOF.md release/
+          npm pack --pack-destination release
+          (cd release && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'release/*'
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          {
+            echo "The official offline checker, built by this workflow from \`checker/\` and byte for byte the file valnivo.eu serves."
+            echo ""
+            echo "**valnivo-checker.html SHA-256:** \`$CHECKER_SHA256\`"
+            echo ""
+            echo "Check a copy you were given: \`sha256sum valnivo-checker.html\` (Windows: \`certutil -hashfile valnivo-checker.html SHA256\`), or choose it on https://valnivo.eu/check/, which compares it for you."
+            echo ""
+            echo "Check it was built here: \`gh attestation verify valnivo-checker.html -R valnivo-labs/verify\`."
+          } > notes.md
+          gh release create "v$v" release/* --title "v$v" --notes-file notes.md

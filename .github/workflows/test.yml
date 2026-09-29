@@ -17,3 +17,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - name: The offline checker is what its source builds
+        run: |
+          npm run build:checker
+          cmp checker/dist/valnivo-checker.html checker/valnivo-checker.html

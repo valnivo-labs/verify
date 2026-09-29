@@ -1,0 +1,69 @@
+/*
+ * The checker's own few rules, and none of `app.css`: it is inlined into the
+ * offline file, which must stand alone. Nocturne's values, light by default and
+ * dark when the device asks — or when `/theme.js` says so on the site.
+ */
+:root {
+  --ck-ground: #eef0f7;
+  --ck-surface: #f9f9fd;
+  --ck-ink: #1d1f2e;
+  --ck-ink-2: #4a4d63;
+  --ck-accent: #6b5ec2;
+  --ck-rule: rgba(29, 31, 46, 0.12);
+  --ck-good: #1f7a4d;
+  --ck-bad: #b3261e;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --ck-ground: #161826;
+    --ck-surface: #232532;
+    --ck-ink: #eceaf6;
+    --ck-ink-2: #b4b2c8;
+    --ck-accent: #9184d9;
+    --ck-rule: rgba(236, 234, 246, 0.12);
+    --ck-good: #6fd19c;
+    --ck-bad: #ff8a80;
+  }
+}
+:root[data-theme='dark'] {
+  --ck-ground: #161826;
+  --ck-surface: #232532;
+  --ck-ink: #eceaf6;
+  --ck-ink-2: #b4b2c8;
+  --ck-accent: #9184d9;
+  --ck-rule: rgba(236, 234, 246, 0.12);
+  --ck-good: #6fd19c;
+  --ck-bad: #ff8a80;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ck-ground);
+  color: var(--ck-ink);
+  font: 400 16px/1.55 Inter, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+.ck { max-width: 720px; margin: 0 auto; padding: 40px 16px 56px; }
+.ck h1 { font-size: 30px; font-weight: 500; margin: 4px 0 12px; }
+.ck h2 { font-size: 19px; font-weight: 500; margin: 28px 0 8px; }
+.ck h3 { font-size: 15px; font-weight: 500; margin: 18px 0 4px; }
+.ck-eyebrow { color: var(--ck-accent); font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; margin: 0; }
+.ck-drop {
+  display: flex; flex-direction: column; gap: 4px; align-items: flex-start;
+  margin: 20px 0; padding: 20px; border-radius: 14px; cursor: pointer;
+  background: var(--ck-surface); box-shadow: 0 0 0 1px var(--ck-rule);
+}
+.ck-drop.ck-over { box-shadow: 0 0 0 2px var(--ck-accent); }
+.ck-drop span { color: var(--ck-ink-2); font-size: 14px; }
+.ck-input { margin-top: 8px; max-width: 100%; color: var(--ck-ink-2); }
+.ck-result:empty { display: none; }
+.ck-result, .ck-about { background: var(--ck-surface); box-shadow: 0 0 0 1px var(--ck-rule); border-radius: 14px; padding: 4px 20px 16px; margin: 16px 0; }
+.ck-verdict { font-weight: 500; }
+.ck-good { color: var(--ck-good); }
+.ck-bad { color: var(--ck-bad); }
+.ck-limit, .ck-hint { color: var(--ck-ink-2); font-size: 14px; }
+.ck-hint { overflow-wrap: anywhere; }
+.ck-strong { font-weight: 500; }
+.ck-steps { padding-left: 20px; }
+.ck a { color: var(--ck-accent); }
+.ck-foot { margin-top: 32px; color: var(--ck-ink-2); font-size: 13px; }

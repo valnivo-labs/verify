@@ -40,6 +40,35 @@ alone.
 [`checker/valnivo-checker.html`](https://github.com/valnivo-labs/verify/blob/main/checker/valnivo-checker.html), in the repository, is the same check as one page that runs in a browser with no
 connection: its own policy forbids every request.
 
+## Official copies
+
+Only these are Valnivo Labs's:
+
+- [valnivo.eu/check](https://valnivo.eu/check/);
+- this repository and [its releases](https://github.com/valnivo-labs/verify/releases);
+- [`@valnivo_labs/verify`](https://www.npmjs.com/package/@valnivo_labs/verify) on npm, published from this repository with provenance.
+
+Anybody may copy and change this code, and a changed copy can be made to say that any document holds.
+It cannot change the document: the same file checked with an official copy, or by a checker written
+from `PROOF.md`, still gives the true answer. Before relying on a `valnivo-checker.html` somebody gave
+you:
+
+- compare its SHA-256 with the one on [the latest release](https://github.com/valnivo-labs/verify/releases/latest)
+  and on valnivo.eu/check — `sha256sum valnivo-checker.html`, or on Windows
+  `certutil -hashfile valnivo-checker.html SHA256` — or simply choose the file on valnivo.eu/check,
+  which compares it for you;
+- `gh attestation verify valnivo-checker.html -R valnivo-labs/verify` shows it was built by this
+  repository's release workflow.
+
+Apache-2.0 grants no right to the Valnivo name (§6): a changed copy may not present itself as
+Valnivo's.
+
+## Building the checker
+
+`checker/` is the offline checker's source exactly as valnivo.eu builds it, with esbuild pinned to the
+same version, so `npm run build:checker` makes the same bytes. The release workflow refuses to publish
+if they differ from the committed file or from what valnivo.eu serves.
+
 ## Also exported
 
 - `@valnivo_labs/verify/signing` — a document two people sign, its signed history, and a proof.

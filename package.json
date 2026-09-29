@@ -1,6 +1,6 @@
 {
   "name": "@valnivo_labs/verify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Checks a signed document saved from a Valnivo Labs product — today, a Valnivo loan PDF — with nothing but the file: the terms both people signed, every step signed and unbroken. The format is written down in PROOF.md.",
   "license": "Apache-2.0",
   "author": "Valnivo Labs",
@@ -52,11 +52,13 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:checker": "node checker/tools/build-checker.mjs",
     "test": "node --test tests/*.test.ts",
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
+    "esbuild": "0.21.5",
     "typescript": "^5.9.3"
   }
 }
