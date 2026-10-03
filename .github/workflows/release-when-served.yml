@@ -1,0 +1,40 @@
+# Starts Release on its own once https://valnivo.eu/valnivo-checker.html is byte
+# for byte the checker committed here and this version has no release yet
+# (owner, 2026-10-03: a version made before Valnivo's production deploy is
+# released right after it, without anybody pressing Run workflow).
+#
+# Until then it says what it is waiting for and passes. It starts Release once
+# per commit, so a Release that fails is not retried every few hours: fix it,
+# or run Release by hand. GitHub stops a schedule after 60 days without a push.
+name: Release when served
+
+on:
+  schedule:
+    - cron: '23 */3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start Release once valnivo.eu serves this checker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if gh release view "v$v" >/dev/null 2>&1; then echo "v$v is released."; exit 0; fi
+          committed=$(sha256sum checker/valnivo-checker.html | cut -d' ' -f1)
+          served=$(curl -fsSL https://valnivo.eu/valnivo-checker.html | sha256sum | cut -d' ' -f1) || served=unreachable
+          echo "committed $committed"
+          echo "served    $served"
+          if [ "$committed" != "$served" ]; then echo "Waiting: valnivo.eu does not serve this checker yet."; exit 0; fi
+          started=$(gh run list --workflow release.yml --commit "$GITHUB_SHA" --json databaseId --jq length)
+          if [ "$started" != "0" ]; then echo "Release has already run for this commit."; exit 0; fi
+          gh workflow run release.yml --ref "${{ github.event.repository.default_branch }}"
+          echo "Started Release for v$v."
