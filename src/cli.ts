@@ -90,6 +90,38 @@ if (result.outcome === 'no-proof') {
   process.exit(1)
 }
 
+// A document several people signed (version 2): its parties, the file it is, and what was issued on it.
+if ('parties' in result) {
+  const { document, entries } = result.proof
+  if (result.outcome === 'unknown-kind') {
+    console.log(result.signaturesHold ? 'SIGNATURES HOLD' : 'NOT AUTHENTIC')
+    console.log(
+      result.signaturesHold
+        ? `What everybody signed is unchanged and every step of its history is signed and unbroken. Its kind, "${result.kind}", has rules of its own that this checker does not know.`
+        : `What did not hold: ${result.problems.join(', ')}`,
+    )
+  } else {
+    console.log(result.outcome === 'holds' ? 'HOLDS' : 'NOT AUTHENTIC')
+    console.log(result.outcome === 'holds' ? WITHOUT_THE_RECORD : `What did not hold: ${result.problems.join(', ')}`)
+  }
+  console.log('')
+  console.log(`Kind:          ${document?.kind}`)
+  for (const party of document?.parties ?? []) {
+    const signedIn = entries.find((e) => e.role === party.id && /^[^\s@]+@[^\s@]+/.test(e.detail))?.detail.split(' ')[0]
+    console.log(`${party.id === 'p1' ? 'Proposed by' : 'Party'}:${' '.repeat(party.id === 'p1' ? 3 : 9)}${party.name}${signedIn ? `, signed in as ${signedIn}` : ''}`)
+  }
+  if (result.outcome !== 'unknown-kind') {
+    const state = result.verdict.state
+    if (state) console.log(`Status:        ${state.status}${result.verdict.closedAs ? ` (${result.verdict.closedAs})` : ''}, signed by ${state.signed.join(', ')}`)
+    if (result.file) console.log(`This file:     ${result.file === 'original' ? 'the file everybody signed' : 'its signature page, not the document'}`)
+    if (result.certificate === 'invalid') console.log('Completion:    carried, and it does not hold')
+    else if (result.certificate) console.log(`Completion:    issued by ${result.certificate.issuer} at ${result.certificate.issuedAt}`)
+  }
+  console.log(`Steps:         ${entries.length}`)
+  console.log(`Fingerprint:   ${result.outcome === 'unknown-kind' ? result.termsPrint : result.verdict.termsPrint}`)
+  process.exit(result.outcome === 'holds' ? 0 : result.outcome === 'unknown-kind' && result.signaturesHold ? 3 : 1)
+}
+
 const { document, entries } = result.proof
 const address = (act: string) => {
   const detail = entries.find((e) => e.act === act)?.detail ?? ''

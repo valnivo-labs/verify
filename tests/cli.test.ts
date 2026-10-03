@@ -46,6 +46,22 @@ test('a signed document of a kind this checker does not know: its signatures are
   assert.match(r.stdout, /Kind: +test\.flat-share/)
 })
 
+test('a document several people signed: its parties are named, and an empty history does not hold, exit 1', async () => {
+  const { PARTIES_PROOF_FORMAT, encodePartiesProof, newNonce } = await import('../src/signing.ts')
+  const { PARTIES_PROOF_MARKS } = await import('../src/index.ts')
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const document = { version: 2 as const, kind: 'test.flat-share', parties: [{ id: 'p1' as const, name: 'Ana' }, { id: 'p2' as const, name: 'Ben' }], order: 'any' as const, content: { rent: 'split' }, nonce: newNonce() }
+  const path = join(mkdtempSync(join(tmpdir(), 'verify-')), 'flat-share.pdf')
+  writeFileSync(path, `%PDF-1.7\n%${PARTIES_PROOF_MARKS.sign}${encodePartiesProof({ format: PARTIES_PROOF_FORMAT, documentId: 'd', document, entries: [] })}\n%%EOF\n`)
+  const r = run(path)
+  assert.equal(r.status, 1, r.stdout + r.stderr)
+  assert.match(r.stdout, /^NOT AUTHENTIC\nWhat did not hold: empty/)
+  assert.match(r.stdout, /Proposed by: +Ana/)
+  assert.match(r.stdout, /Party: +Ben/)
+})
+
 test('an issued document: issued with the list that holds its key, exit 0; changed, exit 1; unknown issuer, exit 1', async () => {
   const { ISSUED_VERSION, encodeIssued, newNonce, signIssued } = await import('../src/signing.ts')
   const { issuedLine } = await import('../src/index.ts')

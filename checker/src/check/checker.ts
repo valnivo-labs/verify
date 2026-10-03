@@ -19,6 +19,7 @@
  * on `innerHTML` here.
  */
 import { IDENTITY_PAYLOAD } from '../lib/identity.generated'
+import { FAMILY } from '../lib/family.generated'
 import type { HistoryEntry } from '../lib/signing.generated'
 import type { LoanContent } from '../lib/loan.generated'
 import {
@@ -29,6 +30,7 @@ import {
   WITHOUT_THE_RECORD,
   checkFile,
   checkIssued,
+  partiesProofInFile,
   type Checked,
   type IssuedChecked,
   type IssuerKey,
@@ -106,6 +108,20 @@ export function issuedSentenceFor(result: IssuedChecked, published: boolean): st
         ? `Not authentic. The file carries ${by}’s signature, but it has been changed since it was issued.`
         : 'Not authentic. Something in it is not what the issuer signed.'
   }
+}
+
+/**
+ * What an issued document's good answer cannot know, or null when it knows it.
+ * Only the list valnivo.eu publishes learns that a key was withdrawn; a check
+ * against the keys pinned into this copy — the offline file always, `/check/`
+ * when the list could not be read — says *issued by* and must say what that
+ * leaves out, or a document signed after a withdrawal reads as good.
+ */
+export function withdrawalCaveat(online: boolean, published: boolean): string | null {
+  if (published) return null
+  return online
+    ? 'Valnivo Labs’ published list of keys could not be read, so a withdrawn key would not show here. Try again when you are online.'
+    : 'This copy checks against the keys pinned into it and reads nothing, so it cannot know whether a key has been withdrawn since it was saved. Check the file at valnivo.eu/check to be sure.'
 }
 
 /** The sentence for an outcome. `online` says whether this checker could have asked for the record. */
@@ -280,18 +296,32 @@ export function mountChecker(root: HTMLElement, options: MountOptions = {}): voi
       )
       return
     }
+    // A document signed in Valnivo Sign is Sign's to judge: its record is not Valnivo's, so it is
+    // recognised before anything is looked up and never given a verdict here (owner, 2026-10-03).
+    if (partiesProofInFile(bytes)) {
+      const sign = FAMILY.find((p) => p.id === 'sign')!
+      const href = `${sign.url}check`
+      result.replaceChildren(
+        h('p', { class: 'ck-verdict' }, `This is not a loan: it is a document signed in ${sign.name}. Valnivo does not hold its record, so it is not checked here.`),
+        h('p', { class: 'ck-hint' }, `Check it with ${sign.name}’s Check a file: `, h('a', { href, rel: 'noreferrer' }, href.replace('https://', ''))),
+      )
+      return
+    }
     const list = options.issuers ? await options.issuers() : 'unreachable'
     const published = list !== 'unreachable'
-    const found = await checkFile(bytes, options.record, published ? { issuers: list } : {})
+    // Every Valnivo Sign document was turned away above.
+    const found = (await checkFile(bytes, options.record, published ? { issuers: list } : {})) as Checked | IssuedChecked
     if ('issued' in found) {
       const show = (checked: IssuedChecked, compared = false) => {
         const good = checked.outcome === 'issued'
+        // Offline, only a good answer is weakened by not knowing of a withdrawal; a bad one stands.
+        const caveat = good || options.issuers ? withdrawalCaveat(!!options.issuers, published) : null
         result.replaceChildren(
           ...[
             h('p', { class: good ? 'ck-verdict ck-good' : 'ck-verdict ck-bad' }, issuedSentenceFor(checked, published)),
             good && compared ? h('p', { class: 'ck-verdict ck-good' }, 'The file you chose is the one it timestamps: these bytes existed at the time it states.') : null,
             good ? h('p', { class: 'ck-limit' }, ISSUED_LIMIT) : null,
-            options.issuers && !published ? h('p', { class: 'ck-hint' }, 'Valnivo Labs’ published list of keys could not be read, so a withdrawn key would not show here.') : null,
+            caveat ? h('p', { class: 'ck-hint' }, caveat) : null,
             checked.problems.length ? h('details', {}, h('summary', {}, 'What did not hold'), h('p', { class: 'ck-hint' }, checked.problems.join(', '))) : null,
             whatTheIssuerSays(checked, (subject) => void compare(subject)),
           ].filter((c): c is HTMLElement => !!c),

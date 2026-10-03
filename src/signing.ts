@@ -251,11 +251,12 @@ export const HISTORY_CONTEXT = 'Valnivo Labs signed history v1'
 /** The acts every kind shares. A kind may add its own, which `verifyHistory` accepts as written. */
 export const CORE_ACTS = ['proposed', 'opened', 'signed', 'declined', 'withdrawn', 'closed'] as const
 
-export interface UnsignedEntry {
+export interface UnsignedEntry<R extends string = Role> {
   /** 0 for the proposal, then 1, 2, … with no gap. */
   seq: number
   act: string
-  role: Role
+  /** `proposer` or `counterparty` in a version-1 document; the party's id (`p2`) in a version-2 one. */
+  role: R
   /** The account that acted, as the product knows it. */
   byUid: string
   /** The fingerprint of the document's text, the same in every entry. */
@@ -270,7 +271,7 @@ export interface UnsignedEntry {
   detail: string
 }
 
-export interface HistoryEntry extends UnsignedEntry {
+export interface HistoryEntry<R extends string = Role> extends UnsignedEntry<R> {
   /** The public half of the key that signed it, as a JWK (ECDSA P-256). */
   publicKey: JsonWebKey
   /** ECDSA P-256 / SHA-256 over `statement`, base64url. */
@@ -282,7 +283,7 @@ export interface HistoryEntry extends UnsignedEntry {
 }
 
 /** What a person's device signs for one entry. */
-export function statement(documentId: string, e: UnsignedEntry): string {
+export function statement(documentId: string, e: UnsignedEntry<string>): string {
   return `${HISTORY_CONTEXT}\n${stableJson({
     documentId,
     seq: e.seq,
@@ -298,7 +299,7 @@ export function statement(documentId: string, e: UnsignedEntry): string {
 const publicJwkOf = (k: JsonWebKey): { kty: string; crv: string; x: string; y: string } => ({ kty: k.kty ?? '', crv: k.crv ?? '', x: k.x ?? '', y: k.y ?? '' })
 
 /** The hash of an entry: its statement, its public key and its signature. */
-export async function entryHash(documentId: string, e: Omit<HistoryEntry, 'hash' | 'at'>): Promise<string> {
+export async function entryHash(documentId: string, e: Omit<HistoryEntry<string>, 'hash' | 'at'>): Promise<string> {
   return sha256Hex(`${statement(documentId, e)}\n${stableJson(publicJwkOf(e.publicKey))}\n${e.signature}`)
 }
 
@@ -334,11 +335,11 @@ export async function newSigningKey(): Promise<{ privateKey: CryptoKey; publicKe
 }
 
 /** Signs one entry and seals it into the chain. */
-export async function signEntry(
+export async function signEntry<R extends string = Role>(
   documentId: string,
-  unsigned: UnsignedEntry,
+  unsigned: UnsignedEntry<R>,
   key: { privateKey: CryptoKey; publicKey: JsonWebKey },
-): Promise<HistoryEntry> {
+): Promise<HistoryEntry<R>> {
   const bytes = new TextEncoder().encode(statement(documentId, unsigned))
   const signature = b64url(new Uint8Array(await globalThis.crypto.subtle.sign(SIGN, key.privateKey, bytes)))
   const publicKey = publicJwkOf(key.publicKey) as JsonWebKey
@@ -347,7 +348,7 @@ export async function signEntry(
 }
 
 /** The next entry's place and link, given the chain so far. */
-export function nextLink(entries: readonly HistoryEntry[]): { seq: number; prevHash: string } {
+export function nextLink(entries: readonly HistoryEntry<string>[]): { seq: number; prevHash: string } {
   const last = entries[entries.length - 1]
   return { seq: entries.length, prevHash: last ? last.hash : '' }
 }
@@ -359,7 +360,12 @@ export function nextLink(entries: readonly HistoryEntry[]): { seq: number; prevH
  * chain and the signatures, never who is *allowed* to act — that is
  * `stepsFor` and the product's rules.
  */
-export async function verifyHistory(documentId: string, entries: readonly HistoryEntry[], termsPrint: string): Promise<string[]> {
+export async function verifyHistory(
+  documentId: string,
+  entries: readonly HistoryEntry<string>[],
+  termsPrint: string,
+  proposer: string = 'proposer',
+): Promise<string[]> {
   const out: string[] = []
   const sorted = [...entries].sort((a, b) => a.seq - b.seq)
   let prev = ''
@@ -369,7 +375,7 @@ export async function verifyHistory(documentId: string, entries: readonly Histor
     if (e.seq !== i) out.push(`gap${at}`)
     if (e.prevHash !== prev) out.push(`broken-link${at}`)
     if (e.termsPrint !== termsPrint) out.push(`other-text${at}`)
-    if (i === 0 && (e.act !== 'proposed' || e.role !== 'proposer')) out.push(`not-a-proposal${at}`)
+    if (i === 0 && (e.act !== 'proposed' || e.role !== proposer)) out.push(`not-a-proposal${at}`)
     if ((await entryHash(documentId, e)) !== e.hash) out.push(`hash${at}`)
     try {
       const key = await globalThis.crypto.subtle.importKey('jwk', { ...publicJwkOf(e.publicKey), ext: true } as JsonWebKey, ECDSA, false, ['verify'])
@@ -495,7 +501,7 @@ export async function verifyProof(proof: Proof, kind: Kind): Promise<Verdict> {
  * and the later entries exist. It is reported as `older-copy`, and the caller
  * says so rather than calling it false.
  */
-export function anchorProblems(proof: Proof, termsPrint: string, anchor: Anchor | null): string[] {
+export function anchorProblems(proof: { documentId: string; entries: readonly HistoryEntry<string>[] }, termsPrint: string, anchor: Anchor | null): string[] {
   if (!anchor) return ['no-record']
   const out: string[] = []
   if (anchor.termsPrint !== termsPrint || anchor.documentId !== proof.documentId) out.push('other-record')
@@ -647,4 +653,224 @@ export function decodeIssued(text: string): IssuedProof | null {
   } catch {
     return null
   }
+}
+
+// --- Documents several people sign: version 2 ---------------------------------
+
+/**
+ * A document **two or more** people sign (owner, 2026-09-30, for Valnivo Sign).
+ *
+ * A new shape of document, so a new version: **version 1 is untouched**, every
+ * document signed under it keeps its fingerprint, its history and its proof,
+ * and nothing above this line changed to make room. Version 2 names its
+ * signers as a list of **parties**, `p1` to `pN`, instead of a proposer and a
+ * counterparty. `p1` proposes, and proposing is their signature, as before.
+ *
+ * - `order: 'any'` — the others sign in whatever order they come;
+ *   `order: 'sequence'` — `p2` before `p3`, and so on.
+ * - Any party who has not signed may **decline**, which ends it for everybody.
+ * - `p1` may **withdraw** until the last signature.
+ * - It is **signed** when every party has signed; a kind may then let `p1`
+ *   close it with an outcome it names.
+ *
+ * Entries in its history carry the party's id (`p2`) where a version-1 entry
+ * carries `proposer` or `counterparty`; the chain, the statement and the hash
+ * are otherwise exactly version 1's, so `verifyHistory` checks both.
+ */
+export const PARTIES_VERSION = 2 as const
+
+/** Signers on one document. More than this is a petition, not an agreement. */
+export const PARTIES_MAX = 10
+
+export type PartyId = `p${number}`
+
+export interface Party {
+  /** `p1` to `pN`, in order; `p1` is the one who proposed. */
+  id: PartyId
+  /** The name the party is known by in the product, as it was when it was proposed. */
+  name: string
+}
+
+export type SigningOrder = 'any' | 'sequence'
+
+export interface PartiesDocument<C = Json> {
+  version: typeof PARTIES_VERSION
+  kind: string
+  parties: Party[]
+  order: SigningOrder
+  content: C
+  nonce: string
+}
+
+const PARTIES_KEYS = ['version', 'kind', 'parties', 'order', 'content', 'nonce']
+
+export const partyId = (index: number): PartyId => `p${index + 1}` as PartyId
+export const PROPOSER_PARTY: PartyId = 'p1'
+
+/** Every reason this cannot be proposed, as short codes; empty means it can. */
+export function partiesDocumentProblems(doc: unknown): string[] {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return ['not-document']
+  const d = doc as Record<string, unknown>
+  const out: string[] = []
+  for (const key of Object.keys(d)) if (!PARTIES_KEYS.includes(key)) out.push(`unknown-field:${key}`)
+  for (const key of PARTIES_KEYS) if (!(key in d)) out.push(`missing:${key}`)
+  if (d.version !== PARTIES_VERSION) out.push('version')
+  if (typeof d.kind !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+)+$/.test(d.kind) || d.kind.length > KIND_MAX) out.push('kind')
+  if (!Array.isArray(d.parties) || d.parties.length < 2 || d.parties.length > PARTIES_MAX) out.push('parties')
+  else
+    d.parties.forEach((p: unknown, i: number) => {
+      const party = p as Record<string, unknown>
+      if (!party || typeof party !== 'object' || Object.keys(party).some((k) => k !== 'id' && k !== 'name')) out.push(`party:${i}`)
+      else if (party.id !== partyId(i)) out.push(`party-id:${i}`)
+      else if (typeof party.name !== 'string' || !party.name.trim() || party.name.length > NAME_MAX) out.push(`party-name:${i}`)
+    })
+  if (d.order !== 'any' && d.order !== 'sequence') out.push('order')
+  if (typeof d.nonce !== 'string' || d.nonce.length !== NONCE_LENGTH || !/^[A-Za-z0-9_-]+$/.test(d.nonce)) out.push('nonce')
+  if (!isPlainJson(d.content)) out.push('content')
+  else if (stableJson(d.content).length > CONTENT_MAX) out.push('content-too-long')
+  return out
+}
+
+/** The text every party signs: the same context line as version 1, then the document as stable JSON. */
+export function partiesCanonical(doc: PartiesDocument<unknown>): string {
+  const { version, kind, parties, order, content, nonce } = doc
+  return `${FINGERPRINT_CONTEXT}\n${stableJson({
+    version,
+    kind,
+    parties: parties.map(({ id, name }) => ({ id, name })),
+    order,
+    content: content as Json,
+    nonce,
+  })}`
+}
+
+export async function partiesFingerprint(doc: PartiesDocument<unknown>): Promise<string> {
+  return sha256Hex(partiesCanonical(doc))
+}
+
+/** A kind of version-2 document: its name, whether the proposer may close it once signed, and with what. */
+export interface PartiesKind {
+  kind: string
+  proposerMayClose: boolean
+  outcomes: readonly string[]
+}
+
+/** Where a version-2 document stands: its status and who has signed so far, `p1` first. */
+export interface PartiesState {
+  status: Status
+  signed: PartyId[]
+}
+
+/** The state right after `p1` proposes. */
+export const proposedState = (): PartiesState => ({ status: 'proposed', signed: [PROPOSER_PARTY] })
+
+/**
+ * Where `action` by `party` takes the document, or null if it may not. This is
+ * the whole of who may do what; a product's rules should allow exactly these.
+ */
+export function partiesNext(
+  kind: PartiesKind,
+  doc: Pick<PartiesDocument<unknown>, 'parties' | 'order'>,
+  state: PartiesState,
+  action: Action,
+  party: PartyId,
+): PartiesState | null {
+  const ids = doc.parties.map((p) => p.id)
+  if (!ids.includes(party)) return null
+  const hasSigned = state.signed.includes(party)
+  if (state.status === 'proposed') {
+    if (action === 'withdraw') return party === PROPOSER_PARTY ? { status: 'withdrawn', signed: state.signed } : null
+    if (action === 'decline') return hasSigned ? null : { status: 'declined', signed: state.signed }
+    if (action === 'sign') {
+      if (hasSigned) return null
+      if (doc.order === 'sequence' && ids[state.signed.length] !== party) return null
+      const signed = [...state.signed, party]
+      return { status: signed.length === ids.length ? 'signed' : 'proposed', signed }
+    }
+    return null
+  }
+  if (state.status === 'signed' && action === 'close') {
+    return kind.proposerMayClose && party === PROPOSER_PARTY ? { status: 'closed', signed: state.signed } : null
+  }
+  return null
+}
+
+/** What `party` may do right now. */
+export function partiesActionsFor(
+  kind: PartiesKind,
+  doc: Pick<PartiesDocument<unknown>, 'parties' | 'order'>,
+  state: PartiesState,
+  party: PartyId,
+): Action[] {
+  return (['sign', 'decline', 'withdraw', 'close'] as const).filter((a) => partiesNext(kind, doc, state, a, party) !== null)
+}
+
+/**
+ * The state the chain arrives at, replaying only the core acts. Null when an
+ * act is one `partiesNext` does not allow from where the chain was, or an
+ * entry names a party the document does not have.
+ */
+export function partiesStateFromHistory(
+  kind: PartiesKind,
+  doc: Pick<PartiesDocument<unknown>, 'parties' | 'order'>,
+  entries: readonly HistoryEntry<PartyId>[],
+): PartiesState | null {
+  let state: PartiesState | null = null
+  const ids = doc.parties.map((p) => p.id as string)
+  for (const e of [...entries].sort((a, b) => a.seq - b.seq)) {
+    if (!ids.includes(e.role)) return null
+    if (e.seq === 0) {
+      if (e.act !== 'proposed' || e.role !== PROPOSER_PARTY) return null
+      state = proposedState()
+      continue
+    }
+    const action = ({ signed: 'sign', declined: 'decline', withdrawn: 'withdraw', closed: 'close' } as Record<string, Action>)[e.act]
+    if (!action) continue
+    const to: PartiesState | null = state ? partiesNext(kind, doc, state, action, e.role) : null
+    if (!to) return null
+    state = to
+  }
+  return state
+}
+
+/** The version-2 proof. A different format name, so a checker that knows only version 1 refuses it rather than misreading it. */
+export const PARTIES_PROOF_FORMAT = 'valnivo-labs-proof-v2'
+
+export interface PartiesProof {
+  format: typeof PARTIES_PROOF_FORMAT
+  documentId: string
+  document: PartiesDocument<unknown>
+  entries: HistoryEntry<PartyId>[]
+  payloads?: Record<string, Json>
+}
+
+export function encodePartiesProof(proof: PartiesProof): string {
+  return b64url(new TextEncoder().encode(stableJson(proof as unknown as Json)))
+}
+
+export function decodePartiesProof(text: string): PartiesProof | null {
+  try {
+    const value = JSON.parse(new TextDecoder().decode(fromB64url(text.trim()))) as PartiesProof
+    return value && value.format === PARTIES_PROOF_FORMAT && Array.isArray(value.entries) ? value : null
+  } catch {
+    return null
+  }
+}
+
+export interface PartiesVerdict {
+  authentic: boolean
+  problems: string[]
+  state: PartiesState | null
+  termsPrint: string
+}
+
+/** Checks a version-2 proof on its own: shape, fingerprint, the whole chain, and that every step was allowed. */
+export async function verifyPartiesProof(proof: PartiesProof, kind: PartiesKind): Promise<PartiesVerdict> {
+  const problems = partiesDocumentProblems(proof.document)
+  if (proof.document?.kind !== kind.kind) problems.push('other-kind')
+  const termsPrint = problems.includes('not-document') ? '' : await partiesFingerprint(proof.document)
+  problems.push(...(await verifyHistory(proof.documentId, proof.entries, termsPrint, PROPOSER_PARTY)))
+  const state = problems.includes('parties') ? null : partiesStateFromHistory(kind, proof.document, proof.entries)
+  if (!state) problems.push('steps')
+  return { authentic: problems.length === 0, problems, state, termsPrint }
 }

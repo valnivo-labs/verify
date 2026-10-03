@@ -184,6 +184,15 @@ the file. To check a timestamp *of a file*, also compute that file's SHA-256 and
 these bytes existed at `issuedAt`; different means the timestamp is of other bytes. It says nothing
 about what the file says or who holds it.
 
+### `labs.completion` — a document several people signed, issued by the service that recorded it
+
+Issued by Valnivo Sign as `sign`, key `sign-1`. Its `content` is built by the service from its own record:
+`{documentId, termsPrint, of, lastHash, historyCount, signers: [{party, email, signedAt}]}` — the document's id and
+fingerprint, its kind, the history's last hash and length, and each party's address and the time the server stamped
+on their signature. No name and nothing of the document is in it. It is carried in the signed file as a
+`%VALNIVO-ISSUED-V1 <proof>` line beside the version-2 proof, and holds only when it names that proof's document and
+fingerprint and its `lastHash` is the proof's entry at position `historyCount`.
+
 ### `labs.document` — a file issued by Valnivo Labs or a product, its proof inside it
 
 The issuer — `valnivo-labs`, or a product — vouches that **it issued this file**. `content` is exactly
@@ -201,3 +210,68 @@ as its last line. To check it:
 
 It shows that the issuer's key issued exactly this file at `issuedAt`. What the file says is the
 issuer's statement, and only as trustworthy as the issuer.
+
+## 8. Documents several people sign: `valnivo-labs-proof-v2`
+
+A document **two or more** people sign (`@valnivo_labs/signing` version 2) is carried the same way as §1–§6,
+with four differences. Nothing in §1–§6 changes for version 1: a loan's proof is exactly as above.
+
+**The line.** Its own mark, so a version-1 checker never mistakes it for one of its own:
+
+| Product | Line |
+|---|---|
+| Valnivo Sign | `%VALNIVO-SIGN-PROOF-V2 <proof>` |
+
+Decoded, the proof is the object of §1 with `"format": "valnivo-labs-proof-v2"`.
+
+**The document.**
+
+```
+{ "version": 2, "kind": "<e.g. labs.agreement>",
+  "parties": [ { "id": "p1", "name": "…" }, { "id": "p2", "name": "…" }, … ],
+  "order": "any" | "sequence",
+  "content": { … }, "nonce": "<43 characters>" }
+```
+
+Two to ten parties, ids `p1` to `pN` in that order. Its fingerprint is the lowercase hex SHA-256 of
+`Valnivo Labs signed document v1\n` followed by the canonical JSON of those six fields — the same context
+line as version 1; `version: 2` and the different fields keep the two from ever coinciding.
+
+**The history.** Exactly §4, except that an entry's `role` is the id of the party who acted (`p2`), and
+the first entry is `proposed` by `p1`. The steps:
+
+- every party signs once; `p1`'s proposal is its signature;
+- with `"order": "sequence"` the others sign in id order, `p2` before `p3`; with `"any"`, in any order;
+- any party who has not signed may `declined`, which ends it; `p1` may `withdrawn` until the last signature;
+- it is signed when every party has; a kind may then let `p1` `closed` it, `detail` naming the outcome.
+
+**The record** is §6 unchanged. For Valnivo Sign it is not published yet: until it is, the best answer is
+`holds`.
+
+**The file must be the one signed.** A proof says what was signed; anybody can paste its line into another PDF.
+So a file holds only when **its first `content.file.bytes` bytes hash to `content.file.sha256`**. Valnivo Sign
+writes a signed copy as the original's bytes unchanged, then the proof line and a `startxref` pointing back at the
+original's cross-reference table — or, when the signatures are drawn on the pages, an **incremental update** (new
+objects, a cross-reference section and a trailer whose `/Prev` is the original's), which leaves the original as the
+exact prefix, as PDF's own signatures do. Copies written before that layout had the proof line inserted before the
+original's last `%%EOF`: removing that one line gives the original back. A **signature page** — a separate PDF
+listing the signatures — is not the document and says so with a line `%VALNIVO-SIGN-PAGE-V1 <fingerprint>`.
+
+### `labs.agreement` — a file several parties sign (Valnivo Sign)
+
+`content` is a closed set of fields: `title`, `file` — `{sha256, name, mediaType, bytes, pages}` of the file
+signed, `mediaType` `application/pdf` — `signers`, one per party in the same order,
+`{party, email, label, organisation}`, `signBy` (a date or `null`), and optionally `replaces`
+`{documentId, termsPrint}` on a correction. **What is signed is the file's fingerprint, never the file**: to
+check the file itself, hash it and compare with `file.sha256`. Only `p1` closes, with `replaced` or `ended`.
+An `organisation` is what the party said they sign for, not a verified fact.
+
+Where a party puts their name to it — `proposed`, `opened`, `signed` — the entry's `detail` is their verified
+address, optionally followed by a space and `sha256:<64 hex>`, the fingerprint of the image of their signature they
+chose to show. The image is bound to the entry that way, so it cannot be swapped; it is a picture shown beside the
+signature, and never the signature itself, which is the entry's key.
+
+### `labs.acknowledgement` — a file received (Valnivo Sign)
+
+The same content without `replaces`, and exactly two parties: `p1` sends, `p2` confirms receipt. Nobody
+closes it.

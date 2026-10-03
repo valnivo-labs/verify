@@ -62,3 +62,10 @@ jobs:
             echo "Check it was built here: \`gh attestation verify valnivo-checker.html -R valnivo-labs/verify\`."
           } > notes.md
           gh release create "v$v" release/* --title "v$v" --notes-file notes.md
+          # One release, never a history of them (owner, 2026-10-01): every other
+          # release goes, with its tag. npm keeps its own versions; this is GitHub only.
+          gh release list --limit 1000 --json tagName --jq '.[].tagName' |
+            while read -r tag; do
+              [ "$tag" = "v$v" ] && continue
+              gh release delete "$tag" --cleanup-tag --yes
+            done

@@ -82,7 +82,7 @@ test('an issued kind this checker does not know: the signature is checked, the c
   const found = await checkIssued(await signIssued(doc, 'test-1', privateKey), { issuers: [key] })
   assert.equal(found.outcome, 'issued')
   assert.equal(found.kindKnown, false)
-  assert.deepEqual(Object.keys(ISSUED_KINDS), [TIMESTAMP_KIND, 'labs.document'])
+  assert.deepEqual(Object.keys(ISSUED_KINDS), [TIMESTAMP_KIND, 'labs.completion', 'labs.document'])
 })
 
 test('a file carries it on its own line, and checkFile tells it from a two-party proof', async () => {
@@ -142,7 +142,7 @@ test('PROOF.md states the issued constants and what an issued document does not 
 })
 
 test('a pinned issuer is named as identity names it, and no real key is invented', () => {
-  const names: Record<string, string> = { 'valnivo-labs': 'Valnivo Labs', valnivo: 'Valnivo', moien: 'Moien', sway: 'Sway' }
+  const names: Record<string, string> = { 'valnivo-labs': 'Valnivo Labs', 'valnivo': 'Valnivo', 'moien': 'Moien', 'sway': 'Sway', 'sign': 'Valnivo Sign' }
   for (const k of ISSUERS) {
     assert.equal(k.name, names[k.issuer], `${k.issuer} ${k.keyId}`)
     assert.ok(!/test/i.test(k.keyId), 'a test key is never pinned')
