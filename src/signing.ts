@@ -682,6 +682,12 @@ export const PARTIES_VERSION = 2 as const
 /** Signers on one document. More than this is a petition, not an agreement. */
 export const PARTIES_MAX = 10
 
+/**
+ * One party may sign alone (owner, 2026-10-04, for Valnivo Sign): proposing is `p1`'s signature, so a document
+ * with no other party is signed the moment it is proposed (`proposedState`).
+ */
+export const PARTIES_MIN = 1
+
 export type PartyId = `p${number}`
 
 export interface Party {
@@ -716,7 +722,7 @@ export function partiesDocumentProblems(doc: unknown): string[] {
   for (const key of PARTIES_KEYS) if (!(key in d)) out.push(`missing:${key}`)
   if (d.version !== PARTIES_VERSION) out.push('version')
   if (typeof d.kind !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+)+$/.test(d.kind) || d.kind.length > KIND_MAX) out.push('kind')
-  if (!Array.isArray(d.parties) || d.parties.length < 2 || d.parties.length > PARTIES_MAX) out.push('parties')
+  if (!Array.isArray(d.parties) || d.parties.length < PARTIES_MIN || d.parties.length > PARTIES_MAX) out.push('parties')
   else
     d.parties.forEach((p: unknown, i: number) => {
       const party = p as Record<string, unknown>
@@ -761,8 +767,14 @@ export interface PartiesState {
   signed: PartyId[]
 }
 
-/** The state right after `p1` proposes. */
-export const proposedState = (): PartiesState => ({ status: 'proposed', signed: [PROPOSER_PARTY] })
+/**
+ * The state right after `p1` proposes: `proposed`, or `signed` at once when `p1` is the document's only party.
+ * Without the document it is the state of one with others still to sign, as before 2026-10-04.
+ */
+export const proposedState = (doc?: Pick<PartiesDocument<unknown>, 'parties'>): PartiesState => ({
+  status: doc?.parties.length === 1 ? 'signed' : 'proposed',
+  signed: [PROPOSER_PARTY],
+})
 
 /**
  * Where `action` by `party` takes the document, or null if it may not. This is
@@ -821,7 +833,7 @@ export function partiesStateFromHistory(
     if (!ids.includes(e.role)) return null
     if (e.seq === 0) {
       if (e.act !== 'proposed' || e.role !== PROPOSER_PARTY) return null
-      state = proposedState()
+      state = proposedState(doc)
       continue
     }
     const action = ({ signed: 'sign', declined: 'decline', withdrawn: 'withdraw', closed: 'close' } as Record<string, Action>)[e.act]

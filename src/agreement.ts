@@ -12,7 +12,8 @@
  *
  * - `labs.acknowledgement` — `p1` sends a file and `p2` confirms they received
  *   it. Exactly two parties. Nobody closes it.
- * - `labs.agreement` — two to ten parties sign, in any order or in sequence.
+ * - `labs.agreement` — one to ten parties sign, in any order or in sequence; one alone
+ *   (owner, 2026-10-04) has signed it by proposing it.
  *   Once signed, only `p1` closes it: *replaced* by a corrected version
  *   everybody signed again (it is never edited), or *ended*.
  *

@@ -493,7 +493,7 @@ export const ISSUERS_URL = 'https://valnivo.eu/.well-known/valnivo-labs-issuers.
  */
 /**
  * `labs.completion`: a signing service's statement, **built from its own record**,
- * that a document several people sign was signed by everybody — which document
+ * that a document was signed by everybody it names — several people, or one signing alone (2026-10-04) — which document
  * (its id and fingerprint), which addresses, when its server recorded each
  * signature, and the history's last hash and length. It vouches for what the
  * service holds and nothing else: it cannot read the document, so no name or
@@ -522,8 +522,8 @@ export function completionProblems(content: unknown): string[] {
   if (typeof c.termsPrint !== 'string' || !/^[0-9a-f]{64}$/.test(c.termsPrint)) out.push('terms-print')
   if (typeof c.lastHash !== 'string' || !/^[0-9a-f]{64}$/.test(c.lastHash)) out.push('last-hash')
   if (typeof c.of !== 'string' || !/^[a-z0-9]+(\.[a-z0-9-]+)+$/.test(c.of)) out.push('of')
-  if (!Number.isInteger(c.historyCount) || (c.historyCount as number) < 2) out.push('history-count')
-  if (!Array.isArray(c.signers) || c.signers.length < 2 || c.signers.length > 10) out.push('signers')
+  if (!Number.isInteger(c.historyCount) || (c.historyCount as number) < 1) out.push('history-count')
+  if (!Array.isArray(c.signers) || c.signers.length < 1 || c.signers.length > 10) out.push('signers')
   else
     c.signers.forEach((s: unknown, i: number) => {
       const x = s as Record<string, unknown>
