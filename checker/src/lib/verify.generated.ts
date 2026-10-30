@@ -236,6 +236,9 @@ export type PartiesChecked =
        * `checkFile`, which has the bytes.
        */
       file?: 'original' | 'signature-page'
+      /** For `original`: which file of the request this is, from 1, and how many there are (1 of 1 for a one-file document). */
+      fileIndex?: number
+      fileCount?: number
       /**
        * A completion certificate the file carries, checked: its issuer's signature against the pinned key, and its
        * content against this file's own proof — same document, same fingerprint, a last hash the proof's history
@@ -281,12 +284,16 @@ export const SIGNATURE_PAGE_MARK = 'VALNIVO-SIGN-PAGE-V1 '
  */
 async function withFileCheck(bytes: Uint8Array, checked: PartiesChecked): Promise<PartiesChecked> {
   if (checked.outcome === 'unknown-kind' || checked.outcome === 'not-authentic') return checked
-  const content = checked.proof.document?.content as { file?: { sha256?: string; bytes?: number } } | undefined
-  const sha = content?.file?.sha256
-  const size = content?.file?.bytes
-  if (typeof sha !== 'string' || typeof size !== 'number') return { ...checked, outcome: 'not-authentic', problems: ['no-file'] }
+  const content = checked.proof.document?.content as { file?: unknown; files?: unknown } | undefined
+  const files = (Array.isArray(content?.files) ? content.files : content?.file ? [content.file] : []) as { sha256?: unknown; bytes?: unknown }[]
+  if (!files.length || files.some((f) => typeof f?.sha256 !== 'string' || typeof f?.bytes !== 'number')) return { ...checked, outcome: 'not-authentic', problems: ['no-file'] }
   const text = new TextDecoder('latin1').decode(bytes)
-  if (size <= bytes.length && (await sha256OfBytes(bytes.slice(0, size))) === sha) return withCertificate(text, { ...checked, file: 'original' })
+  const original = (i: number): PartiesChecked => ({ ...checked, file: 'original', fileIndex: i + 1, fileCount: files.length })
+  for (const [i, f] of files.entries()) {
+    const sha = f.sha256 as string
+    const size = f.bytes as number
+    if (size <= bytes.length && (await sha256OfBytes(bytes.slice(0, size))) === sha) return withCertificate(text, original(i))
+  }
   for (const mark of Object.values(PARTIES_PROOF_MARKS)) {
     const at = text.indexOf(`%${mark}`)
     if (at < 0) continue
@@ -294,7 +301,9 @@ async function withFileCheck(bytes: Uint8Array, checked: PartiesChecked): Promis
     const without = new Uint8Array(bytes.length - (end < 0 ? bytes.length - at : end + 1 - at))
     without.set(bytes.subarray(0, at), 0)
     if (end >= 0) without.set(bytes.subarray(end + 1), at)
-    if ((await sha256OfBytes(without)) === sha) return withCertificate(text, { ...checked, file: 'original' })
+    const got = await sha256OfBytes(without)
+    const i = files.findIndex((f) => f.sha256 === got)
+    if (i >= 0) return withCertificate(text, original(i))
   }
   if (text.includes(`%${SIGNATURE_PAGE_MARK}${checked.verdict.termsPrint}`)) return withCertificate(text, { ...checked, file: 'signature-page' })
   return { ...checked, outcome: 'not-authentic', problems: ['file-changed'] }
@@ -458,6 +467,7 @@ export interface IssuerKey {
  *   software protection, `EC_SIGN_P256_SHA256`, created 2026-09-29.
  * - `valnivo-labs-1`: the same key ring, `cryptoKeys/valnivo-labs/cryptoKeyVersions/1`, created 2026-09-29.
  * - `sign-1`: the same key ring, `cryptoKeys/sign/cryptoKeyVersions/1`, created 2026-09-30 — Valnivo Sign's.
+ * - `moien-1`: the same key ring, `cryptoKeys/moien/cryptoKeyVersions/1`, created 2026-10-16 — Moien's (the certificates of completion).
  */
 export const ISSUERS: readonly IssuerKey[] = [
   {
@@ -484,6 +494,15 @@ export const ISSUERS: readonly IssuerKey[] = [
     keyId: 'sign-1',
     publicKey: { kty: 'EC', crv: 'P-256', x: 'x3nBS25tKh_Cq-GqUFr3DwOS2-VTJa636ujiSeScn4E', y: 'onf23lInfjuG807yum5QE6f-dvpj3h01JXXCwedB9es' },
     validFrom: '2026-09-30T21:22:05Z',
+    validUntil: null,
+    revokedAt: null,
+  },
+  {
+    issuer: 'moien',
+    name: 'Moien',
+    keyId: 'moien-1',
+    publicKey: { kty: 'EC', crv: 'P-256', x: 'xlQbO7Io1M3H3vhhgje-iwbin6iuzJY5UXnp33a5Ao0', y: 'tCi8QfyAmOwioBMJzQv1lVp3FImHuP2ysKcNcYSW-wI' },
+    validFrom: '2026-10-16T13:32:25Z',
     validUntil: null,
     revokedAt: null,
   },
@@ -628,4 +647,4 @@ export async function checkIssued(issued: IssuedProof, options: IssuedOptions = 
  */
 export const ISSUED_LIMIT =
   'Issued: the issuer’s pinned key signed exactly this at the time it states. The time is the issuer’s own claim, and the issuer vouches for nothing but what the document says it vouches for — a timestamp, for instance, shows only that the file’s fingerprint existed then, not what the file says or who holds it.'
-// foundation-fingerprint: 1c4887bc3b7b962cf77a63d51f02d1c2ce6fb4d130db5a213f133be06cb3f470
+// foundation-fingerprint: 82832535b997c6adea91641afbcd9ab5fbb2c97149946b07e4b278818d471784
