@@ -186,7 +186,7 @@ about what the file says or who holds it.
 
 ### `labs.completion` — a document several people signed, issued by the service that recorded it
 
-Issued by Valnivo Sign as `sign`, key `sign-1`. Its `content` is built by the service from its own record:
+Issued by Valnivo Sign as `sign`, key `sign-1` (Cloud KMS) or, from 2026-11-25, `sign-3` (a file key on Valnivo Labs' Oracle host; `sign-2`, the same kind of key, signs other products' documents). Its `content` is built by the service from its own record:
 `{documentId, termsPrint, of, lastHash, historyCount, signers: [{party, email, signedAt}]}` — the document's id and
 fingerprint, its kind, the history's last hash and length, and each party's address and the time the server stamped
 on their signature. No name and nothing of the document is in it. It is carried in the signed file as a
@@ -207,6 +207,9 @@ as its last line. To check it:
 2. **Take the line out** — from its `%` to and including its `\n` — and hash what is left with SHA-256.
 3. It must equal `content.sha256`. If it does not, the file around the proof is not the file that was
    issued: something in it was changed.
+
+Moien issues its level certificates this way, as `moien` with key `moien-1`: the file is a one-page PDF and the title
+is `Moien certificate <level> · <number> · <name>`, the name being the one the holder typed.
 
 It shows that the issuer's key issued exactly this file at `issuedAt`. What the file says is the
 issuer's statement, and only as trustworthy as the issuer.
@@ -270,6 +273,17 @@ Where a party puts their name to it — `proposed`, `opened`, `signed` — the e
 address, optionally followed by a space and `sha256:<64 hex>`, the fingerprint of the image of their signature they
 chose to show. The image is bound to the entry that way, so it cannot be swapped; it is a picture shown beside the
 signature, and never the signature itself, which is the entry's key.
+
+#### Several files
+
+A request of two to ten files has **`files`** — a list of those same `{sha256, name, mediaType, bytes, pages}` — in
+place of `file`, in the order signed. **Exactly one of the two is present**, and one file is never written as a list of
+one, so every document made before this keeps its content and fingerprint unchanged. No two files in the list share a
+`sha256`, and their `bytes` add up to at most 50 MB. Each file is checked on its own the way a single file is: its
+first `bytes` bytes hash to its `sha256`; a holder of one file says which of the list it is. The fingerprint of the
+document covers the whole list and its order. An entry's `detail` may name the file the image sits on, between the
+image and the placement: `<address> sha256:<64 hex> file:<2 to 10> place:<page>:<x>:<y>:<width>` — `file:` is left out
+for the first file, and must name a file of the document.
 
 ### `labs.acknowledgement` — a file received (Valnivo Sign)
 

@@ -142,14 +142,44 @@ test('PROOF.md states the issued constants and what an issued document does not 
 })
 
 test('a pinned issuer is named as identity names it, and no real key is invented', () => {
-  const names: Record<string, string> = { 'valnivo-labs': 'Valnivo Labs', 'valnivo': 'Valnivo', 'moien': 'Moien', 'sway': 'Sway', 'sign': 'Valnivo Sign' }
+  const names: Record<string, string> = { 'valnivo-labs': 'Valnivo Labs', 'valnivo': 'Valnivo', 'moien': 'Moien', 'sway': 'Sway', 'sign': 'Valnivo Sign', 'home': 'Valnivo Home' }
   for (const k of ISSUERS) {
     assert.equal(k.name, names[k.issuer], `${k.issuer} ${k.keyId}`)
     assert.ok(!/test/i.test(k.keyId), 'a test key is never pinned')
   }
 })
 
+test('moien-1 is pinned for Moien: the public half of its Cloud KMS key, from 2026-10-16', () => {
+  const moien = ISSUERS.find((k) => k.keyId === 'moien-1')!
+  assert.equal(moien.issuer, 'moien')
+  assert.equal(moien.name, 'Moien')
+  assert.equal(moien.publicKey.x, 'xlQbO7Io1M3H3vhhgje-iwbin6iuzJY5UXnp33a5Ao0')
+  assert.equal(moien.publicKey.y, 'tCi8QfyAmOwioBMJzQv1lVp3FImHuP2ysKcNcYSW-wI')
+  assert.equal(moien.validFrom, '2026-10-16T13:32:25Z')
+  assert.equal(moien.validUntil, null)
+  assert.equal(moien.revokedAt, null)
+})
+
 test('the issued wording never claims more than a signature', () => {
   const words = /\b(certified|official|legally valid|qualified seal|notari[sz]ed)\b/i
   for (const text of [ISSUED_LIMIT, spec.slice(spec.indexOf('## 7.'))]) assert.ok(!words.test(text.replace(/not a qualified electronic seal/g, '')))
+})
+
+test('sign-2 is pinned for Valnivo Sign beside sign-1: the file key on the Oracle host, from 2026-11-18', () => {
+  const sign2 = ISSUERS.find((k) => k.keyId === 'sign-2')!
+  assert.equal(sign2.issuer, 'sign')
+  assert.equal(sign2.publicKey.x, 'DwfKO5qUfo0M22xEIAtVcwI4pHG0QirHTnB3Zqh6ACI')
+  assert.equal(sign2.publicKey.y, 'YcUSxmceZW0LvulfkykZumsRt941swfqUNiIU8Pi_hM')
+  assert.equal(sign2.validFrom, '2026-11-18T08:58:00Z')
+  // What sign-1 signed must still check.
+  assert.equal(ISSUERS.find((k) => k.keyId === 'sign-1')!.validUntil, null)
+})
+
+test('sign-3 is pinned for Valnivo Sign: its own records on the Oracle host, from 2026-11-25', () => {
+  const sign3 = ISSUERS.find((k) => k.keyId === 'sign-3')!
+  assert.equal(sign3.issuer, 'sign')
+  assert.equal(sign3.publicKey.x, 'Dd1gp2gXPVZombfO6UxAwME2LDgcErBZgfynMwVCHSM')
+  assert.equal(sign3.publicKey.y, 'mrzCgIBvZ3YIOxhVWhdLvGFU7QIyEPa7tcONchcKL_M')
+  assert.equal(sign3.validFrom, '2026-11-25T22:07:00Z')
+  for (const id of ['sign-1', 'sign-2']) assert.equal(ISSUERS.find((k) => k.keyId === id)!.validUntil, null)
 })

@@ -63,7 +63,7 @@ const html = `<!doctype html>
   this computer and sends nothing anywhere: the policy above forbids every
   connection. It checks that the terms are the ones both people signed and that
   nothing in the history was changed. It cannot check Valnivo's own record of
-  the history — for that, use https://valnivo.eu/check/ while it exists.
+  the history — for that, use https://planner.valnivo.eu/check/ while it exists.
   The proof format is written down in full (valnivo-labs-proof-v1) at
   https://github.com/valnivo-labs/verify, so the same check can be redone with
   any SHA-256 and ECDSA P-256 implementation.
